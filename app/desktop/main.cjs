@@ -4,7 +4,7 @@
  *   · Cloudflare API token  → encrypted at rest (safeStorage/DPAPI), used here only
  *   · Bot token             → same
  *   · Ed25519 private key   → same; signing happens here, the key never reaches the renderer
- *   · Password hash/salt    → local SQLite (better-sqlite3) in userData
+ *   · Password hash/salt    → local JSON in userData (no native module needed)
  *   · Audit log             → local SQLite, append-only, no secrets
  *
  * The renderer gets results and masked flags only (see preload.cjs).
@@ -16,12 +16,6 @@ const crypto = require('node:crypto')
 
 /* ───────────────────────── local store ───────────────────────── */
 
-let Database = null
-try {
-  Database = require('better-sqlite3')
-} catch (e) {
-  console.warn('[controler] better-sqlite3 غير متاح — سيُستخدم تخزين JSON:', e.message)
-}
 
 const userDir = () => app.getPath('userData')
 
@@ -40,30 +34,6 @@ function readJson(name, fallback) {
 function writeJson(name, value) {
   fs.mkdirSync(userDir(), { recursive: true })
   fs.writeFileSync(jsonPath(name), JSON.stringify(value), 'utf8')
-}
-
-let db = null
-function getDb() {
-  if (db) return db
-  if (!Database) return null
-  fs.mkdirSync(userDir(), { recursive: true })
-  db = new Database(path.join(userDir(), 'controler.db'))
-  db.pragma('journal_mode = WAL')
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS kv (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS audit (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      action TEXT NOT NULL,
-      target TEXT,
-      details TEXT,
-      at TEXT NOT NULL
-    );
-  `)
-  return db
 }
 
 /* ───────────────────────── secrets (encrypted at rest) ───────────────────────── */
@@ -420,45 +390,31 @@ const HANDLERS = {
   'license:sign': (j) => handleLicenseSign(j),
   'license:checkKey': () => handleLicenseCheck(),
   'db:auditAppend': (e) => {
-    const database = getDb()
     const row = {
       action: String(e?.action ?? '').slice(0, 60),
       target: e?.target != null ? String(e.target).slice(0, 120) : null,
       details: e?.details ? JSON.stringify(e.details).slice(0, 2000) : null,
       at: String(e?.at ?? new Date().toISOString()),
     }
-    if (database) database.prepare('INSERT INTO audit (action, target, details, at) VALUES (?, ?, ?, ?)').run(row.action, row.target, row.details, row.at)
-    else {
-      const list = readJson('audit.json', [])
-      list.push(row)
-      writeJson('audit.json', list.slice(-1000))
-    }
+    const list = readJson('audit.json', [])
+    list.push(row)
+    // سقف 5000 سطر — يكفي سنوات استخدام ويُبقي الملف صغيراً
+    const trimmed = list.length > 5000 ? list.slice(list.length - 5000) : list
+    writeJson('audit.json', trimmed)
     return { ok: true }
   },
   'db:auditList': (limit) => {
     const n = Math.min(Math.max(Number(limit) || 200, 1), 1000)
-    const database = getDb()
-    if (database) return database.prepare('SELECT id, action, target, details, at FROM audit ORDER BY id DESC LIMIT ?').all(n)
-    return readJson('audit.json', []).slice(-n).reverse().map((row, i) => ({ id: i + 1, ...row }))
+    const list = readJson('audit.json', [])
+    return list.slice(-n).reverse().map((row, i) => ({ id: list.length - i, ...row }))
   },
   'db:cacheGet': (key) => {
-    const database = getDb()
-    if (database) {
-      const row = database.prepare('SELECT value FROM kv WHERE key = ?').get(String(key))
-      return row ? row.value : null
-    }
     const cache = readJson('cache.json', {})
-    return cache[key] ?? null
+    return cache[String(key)] ?? null
   },
   'db:cachePut': (key, value) => {
-    const database = getDb()
-    if (database) {
-      database.prepare('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
-        .run(String(key), String(value), new Date().toISOString())
-      return { ok: true }
-    }
     const cache = readJson('cache.json', {})
-    cache[key] = value
+    cache[String(key)] = String(value)
     writeJson('cache.json', cache)
     return { ok: true }
   },

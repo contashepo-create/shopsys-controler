@@ -21,7 +21,6 @@
     "desktop:dist": "vite build && node desktop/build.mjs && electron-builder --win nsis --publish never"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
     "lucide-react": "^1.45.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -30,7 +29,6 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
