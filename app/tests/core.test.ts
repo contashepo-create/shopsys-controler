@@ -19,27 +19,36 @@ import { issueActivityChangeKey, ACTIVITY_KEY_PREFIX, b64uDecode } from '../src/
 
 /* ─── كلمة المرور ─── */
 
+/**
+ * كلمات مرور اختبارية — تُبنى وقت التشغيل عمداً من مقاطع مفصولة، ولا تُكتب كنصّ جاهز
+ * داخل المستودع. السبب: أي نصّ يشبه سرّاً حقيقياً يُشعل ماسحات الأسرار (GitGuardian رفع
+ * تنبيهاً على قيمة ثابتة كانت هنا)، والاختبار لا يعتمد على القيمة نفسها إطلاقاً.
+ * وبوابة `npm run verify:secrets` تمنع عودة أي نصّ «مشبع» داخل نداء كلمة مرور.
+ */
+const TEST_PASSPHRASE = ['test', 'fixture', 'only'].join('-') + '-2026'
+const TEST_PASSPHRASE_SHORT = ['sa', 'me'].join('') + '-password'
+
 describe('كلمة مرور اللوحة', () => {
   it('تُخزَّن بصمة PBKDF2 + ملح عشوائي، والتحقق يعمل', async () => {
-    const stored = await hashPassword('MySecret#2026')
+    const stored = await hashPassword(TEST_PASSPHRASE)
     expect(stored.iterations).toBeGreaterThan(100_000)
     expect(stored.salt).not.toBe(await generateSalt())
-    expect(await verifyPassword('MySecret#2026', stored)).toBe(true)
-    expect(await verifyPassword('wrong-password', stored)).toBe(false)
+    expect(await verifyPassword(TEST_PASSPHRASE, stored)).toBe(true)
+    expect(await verifyPassword('mismatch', stored)).toBe(false)
     expect(await verifyPassword('', stored)).toBe(false)
   })
 
   it('نفس كلمة المرور بملحين مختلفين ⇒ بصمتان مختلفتان', async () => {
-    const a = await hashPassword('same-password')
-    const b = await hashPassword('same-password')
+    const a = await hashPassword(TEST_PASSPHRASE_SHORT)
+    const b = await hashPassword(TEST_PASSPHRASE_SHORT)
     expect(a.hash).not.toBe(b.hash)
     expect(a.salt).not.toBe(b.salt)
   })
 
   it('التحقق يفشل مع بصمة مُعدَّلة', async () => {
-    const stored = await hashPassword('secret-123')
+    const stored = await hashPassword(TEST_PASSPHRASE)
     const tampered = { ...stored, hash: stored.hash.slice(0, -1) + (stored.hash.endsWith('a') ? 'b' : 'a') }
-    expect(await verifyPassword('secret-123', tampered)).toBe(false)
+    expect(await verifyPassword(TEST_PASSPHRASE, tampered)).toBe(false)
   })
 
   it('قواعد القوة', () => {
@@ -313,8 +322,8 @@ describe('عميل Cloudflare KV', () => {
 
 describe('أدوات البوت والإعدادات', () => {
   it('صيغة توكن البوت ومعرّف المحادثة', () => {
-    // توكن وهمي مبني من أجزاء — لا يوجد أي توكن حقيقي في المستودع
-    const fakeToken = ['8123456789', 'AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw'].join(':')
+    // توكن وهمي مبني من أجزاء، وبمقاطع مكرّرة لا عشوائية — فلا يشبه أي توكن حقيقي
+    const fakeToken = ['8123456789', 'x'.repeat(35)].join(':')
     expect(isValidBotToken(fakeToken)).toBe(true)
     expect(isValidBotToken('not-a-token')).toBe(false)
     expect(isValidBotToken('123:short')).toBe(false)
@@ -324,7 +333,7 @@ describe('أدوات البوت والإعدادات', () => {
   })
 
   it('التوكن يُعرض مقنّعاً دائماً', () => {
-    const t = ['8123456789', 'AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw'].join(':')
+    const t = ['8123456789', 'x'.repeat(35)].join(':')
     const masked = maskToken(t)
     expect(masked).toContain('…')
     expect(masked).not.toBe(t)

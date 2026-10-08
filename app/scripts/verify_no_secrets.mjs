@@ -20,6 +20,13 @@ const PATTERNS = [
   { name: 'Stripe/OpenAI style key', re: /\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{20,}\b/ },
   { name: 'AWS access key', re: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'assigned secret assignment', re: /\b(?:api[_-]?token|bot[_-]?token|private[_-]?key|password)\s*[:=]\s*['"][^'"\n]{16,}['"]/i },
+  // قاعدة أُضيفت بعد تنبيه GitGuardian على قيمة اختبارية ثابتة في core.test.ts:
+  // لا يُمرَّر نصّ «مشبع» (حرف كبير + رقم على الأقل) مباشرةً لنداء كلمة مرور؛
+  // عينات الاختبار تُبنى وقت التشغيل (['a','b'].join(...)) فلا تُشبه سرّاً في المستودع.
+  {
+    name: 'password-like literal in a password call',
+    re: /\b(?:hash|verify)Password\s*\(\s*['"](?=[^'"\n]*[A-Z])(?=[^'"\n]*\d)[^'"\n]+['"]/,
+  },
 ]
 
 const ALLOW = [
