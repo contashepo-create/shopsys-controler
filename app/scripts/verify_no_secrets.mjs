@@ -8,7 +8,7 @@ import { join, relative, extname } from 'node:path'
 import process from 'node:process'
 
 const ROOT = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'dist-desktop', 'release', 'out', 'coverage', '.vite'])
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'dist-desktop', 'release', 'out', 'coverage', '.vite', 'win-unpacked'])
 const SKIP_EXT = new Set(['.png', '.jpg', '.jpeg', '.ico', '.webp', '.woff', '.woff2', '.ttf', '.db', '.exe', '.zip'])
 
 const PATTERNS = [

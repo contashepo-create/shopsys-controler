@@ -24,6 +24,18 @@
 - ❌ لا نسخ احتياطية لقواعد بيانات العملاء
 - ❌ لا وصول لأي بيانات محاسبية/تجارية للعملاء
 
+### الإصدار والتنزيل
+المثبّت يُبنى تلقائياً على GitHub Actions (ويندوز) عند دفع وسم إصدار:
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+ثم من تبويب **Releases**: `shopsys-controler-setup-<version>.exe` (مثبّت NSIS)
+و`shopsys-controler-portable-<version>.zip` (نسخة محمولة).
+
+- للتشغيل من المصدر: `cd app && npm install && npm run desktop:dev`
+- لبناء المثبّت محلياً على ويندوز: `npm run desktop:dist` (ينتج `app/release/`)
+- بوابات التحقق قبل أي دفعة: `npm run verify:all`
+
 ### المستندات
 - 📄 [خطة البناء والتصور التفصيلية (v2)](docs/خطة_لوحة_التحكم.md)
 - 🎨 [تصميم أولي للواجهة](docs/mockups/control-panel-dashboard-concept.png)

@@ -5,12 +5,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'رقم الإصدار للوسم (اتركه فارغاً ليُقرأ من app/package.json)'
-        required: false
-        default: ''
+  workflow_dispatch: {}
 
 permissions:
   contents: write # إنشاء الإصدار ورفع الملفات
@@ -50,7 +45,15 @@ jobs:
           Compress-Archive -Path "release/win-unpacked/*" -DestinationPath "release/shopsys-controler-portable-$version.zip" -Force
           Get-ChildItem release | Select-Object Name, Length
 
-      - name: رفع ملفات الحزمة كأثر للفحص
+      - name: عرض بصمات الملفات (SHA-256)
+        shell: pwsh
+        run: |
+          Get-ChildItem release -Include *.exe,*.zip -Recurse | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          }
+
+      - name: رفع ملفات الحزمة كأثر
         uses: actions/upload-artifact@v4
         with:
           name: windows-package
@@ -69,47 +72,21 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          if [ -n "${{ inputs.version }}" ]; then VERSION="${{ inputs.version }}"; fi
           TAG="v$VERSION"
           echo "الإصدار: $TAG"
 
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "الإصدار موجود مسبقاً — سيتم تحديث الملفات"
+          else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
               --title "مركز تحكم المطور — $TAG" \
-              --notes "$(cat <<'NOTES'
-          ## مركز تحكم المطور — Shopsys Controler (ويندوز)
-
-          لوحة تحكم مكتبية لإدارة تراخيص واشتراكات تطبيق «تَحَكَّم»، تعمل على نفس بيانات
-          بوت تليجرام بلا أي تعارض.
-
-          ### التنزيل
-          - **shopsys-controler-setup-x.y.z.exe** — المثبّت (يُنشئ اختصار «تحكم المطور» على سطح المكتب)
-          - **shopsys-controler-portable-x.y.z.zip** — نسخة محمولة بلا تثبيت (فُك الضغط وشغّل `Shopsys Controler.exe`)
-
-          ### أول تشغيل
-          1. شاشة إنشاء الحساب: الاسم + رقم الهاتف + البريد + كلمة مرور اللوحة.
-          2. الإعدادات ← Cloudflare: Account ID + API Token (صلاحية KV Read & Write) + namespace الخدمات.
-          3. الإعدادات ← البوت: توكن البوت + معرّف محادثتك (لتصل رموز التحقق عند نسيان كلمة المرور).
-          4. الإعدادات ← مفتاح التوقيع: الصق المفتاح الخاص (يُخزَّن مشفّراً على جهازك فقط).
-
-          ### تنبيهات
-          - البرنامج **غير موقّع رقمياً** — سيعرض ويندوز تحذير SmartScreen عند أول تشغيل
-            (المزيد من المعلومات ← تشغيل على أي حال). التوقيع يتطلب شهادة مدفوعة.
-          - المفتاح الخاص للتوقيع لا يُرفع إلى أي جهة، ولا يوجد أي نسخ احتياطي لبيانات العملاء.
-          NOTES
-            )" \
-              --verify-tag 2>/dev/null || \
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "مركز تحكم المطور — $TAG" \
-              --notes "مركز تحكم المطور — إصدار $TAG (ويندوز)"
+              --notes-file ../docs/release-notes-ar.md \
+              --verify-tag
           fi
 
           shopt -s nullglob
           FILES=(release/*.exe release/*.zip)
-          if [ ${#FILES[@]} -eq 0 ]; then echo "لا ملفات للرفع"; exit 1; fi
+          if [ ${#FILES[@]} -eq 0 ]; then echo "✖ لا ملفات للرفع"; exit 1; fi
           gh release upload "$TAG" "${FILES[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           echo "✅ تم رفع ${#FILES[@]} ملفاً إلى $TAG"
