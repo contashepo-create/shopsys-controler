@@ -32,8 +32,18 @@ jobs:
       - name: تثبيت الحزم
         run: npm ci
 
-      - name: بوابات التحقق (أسرار + نواة الترخيص + أنواع + اختبارات)
-        run: npm run verify:all
+      # خطوات منفصلة: أي فحص يفشل يظهر باسمه مباشرة في تبويب Actions بلا حاجة لقراءة السجلات
+      - name: فحص الأسرار (لا مفاتيح أو توكنات في المستودع)
+        run: npm run verify:secrets
+
+      - name: فحص نواة الترخيص (المتجه الذهبي)
+        run: npm run verify:license
+
+      - name: فحص أنواع TypeScript
+        run: npm run typecheck
+
+      - name: اختبارات الوحدة
+        run: npm test
 
       - name: بناء الواجهة ومثبّت NSIS
         run: npm run desktop:dist

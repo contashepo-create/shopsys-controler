@@ -4,10 +4,12 @@
  * Checks every file in the repo except ignored/build dirs.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative, extname } from 'node:path'
+import { dirname, join, relative, extname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import process from 'node:process'
 
-const ROOT = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+// جذر المستودع — fileURLToPath يعمل على ويندوز ولينكس بلا تعقيدات مسارات
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'dist-desktop', 'release', 'out', 'coverage', '.vite', 'win-unpacked'])
 const SKIP_EXT = new Set(['.png', '.jpg', '.jpeg', '.ico', '.webp', '.woff', '.woff2', '.ttf', '.db', '.exe', '.zip'])
 

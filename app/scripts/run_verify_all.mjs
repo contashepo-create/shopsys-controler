@@ -7,7 +7,11 @@
  *   ④ اختبارات الوحدة (vitest)
  */
 import { spawnSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import process from 'node:process'
+
+const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const steps = [
   { name: 'فحص الأسرار', cmd: [process.execPath, 'scripts/verify_no_secrets.mjs'] },
@@ -19,7 +23,7 @@ const steps = [
 let failed = 0
 for (const step of steps) {
   console.log(`\n▶ ${step.name}…`)
-  const res = spawnSync(step.cmd[0], step.cmd.slice(1), { stdio: 'inherit', shell: process.platform === 'win32' })
+  const res = spawnSync(step.cmd[0], step.cmd.slice(1), { stdio: 'inherit', cwd: APP_DIR, shell: process.platform === 'win32' })
   if (res.status !== 0) {
     console.error(`✖ فشل: ${step.name}`)
     failed += 1

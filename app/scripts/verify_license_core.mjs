@@ -12,12 +12,13 @@
  * التشغيل: node --experimental-strip-types scripts/verify_license_core.mjs
  * أو: npm run verify:license
  */
-import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import process from 'node:process'
 
-const here = new URL('.', import.meta.url).pathname
+// fileURLToPath: يعمل على لينكس وويندوز (‎.pathname يُنتج /D:/‎ على ويندوز ويكسر join)
+const here = dirname(fileURLToPath(import.meta.url))
 const core = await import(pathToFileURL(join(here, '..', 'src', 'core', 'license.ts')).href)
 
 const EXPECTED_PUBLIC = 'mOugSh8oJdc5H6nB9mMTNQYjyXzYle2RJepQkob3msE'
