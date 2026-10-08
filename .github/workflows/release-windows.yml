@@ -1,19 +1,35 @@
 name: إصدار ويندوز
 
-# يُشغَّل تلقائياً عند دفع وسم إصدار (v0.1.0 مثلاً)، أو يدوياً من تبويب Actions.
+# يُشغَّل بوسم إصدار vX.Y.Z فقط — والوسم يأتي من سير «إصدار آلي» (أي تحديث
+# يصل main) أو من وسم مقصود يدوياً. لا نشر من فرع.
+#
+# المعمارية (نفس منظومة تَحَكَّم):
+#   الكود هنا (مستودع خاص) → البناء هُنا → النشر إلى رف الإصدارات **العام**
+#   `contashepo-create/shopsys-controler-updater` — مستودع لا يحتوي أي كود،
+#   فيه الإصدارات وملفات التحديث (latest.yml + blockmap) فقط.
+#   التطبيق عند المالك يقرأ من هناك بلا توكن (الرف عام)، فلا يُكشف الكود.
 on:
   push:
     tags:
       - 'v*'
+  # يُستدعى آلياً من سير «إصدار آلي» على مرجع الوسم (أو يدوياً من تبويب Actions
+  # باختيار الوسم نفسه) — فوسم يدفعه بوت بـ GITHUB_TOKEN لا يُشغّل سيراً تلقائياً
+  # بحسب قواعد GitHub، ولهذا الاستدعاء الصريح ضماناً لوصول الإصدار للرف.
   workflow_dispatch: {}
 
 permissions:
-  contents: write # إنشاء الإصدار ورفع الملفات
+  contents: write # لبناء أثر الإصدار هنا؛ النشر نفسه إلى الرف العام بتوكن منفصل
+
+# بناء واحد في كل مرة: وسمان متلاحقان يبنيان بالترتيب لا بالسباق
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
 
 jobs:
   build-windows:
-    name: بناء مثبّت ويندوز ونشره
+    name: بناء مثبّت ويندوز ونشره للرف العام
     runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: app
@@ -21,6 +37,24 @@ jobs:
     steps:
       - name: جلب المستودع
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # التاريخ كاملاً لصياغة ملاحظات الإصدار من الالتزامات
+
+      - name: حارس الوسم (vX.Y.Z حصراً + مطابقته لإصدار الحزمة)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(node -p "require('./app/package.json').version")"
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "✗ ${TAG} ليس وسماً بإصدار vX.Y.Z — لا نشر"
+            exit 1
+          fi
+          if [ "${TAG}" != "v${VERSION}" ]; then
+            echo "✗ الوسم ${TAG} لا يطابق إصدار app/package.json (${VERSION}) — لا نشر يضلّل العملاء"
+            exit 1
+          fi
+          echo "✓ الوسم ${TAG} مطابق لإصدار الحزمة"
 
       - name: تهيئة Node
         uses: actions/setup-node@v4
@@ -51,7 +85,6 @@ jobs:
 
       - name: بناء مثبّت NSIS
         run: npx electron-builder --win nsis --x64 --publish never
-        working-directory: app
 
       - name: حزمة محمولة (بلا تثبيت)
         shell: pwsh
@@ -85,6 +118,22 @@ jobs:
           if (!$latest) { throw "latest.yml مفقود — التحديث التلقائي لن يعمل" }
           Get-Content $latest.FullName
 
+      - name: التحقق من وجهة التحديث (الرف العام بلا كود)
+        shell: bash
+        run: |
+          set -euo pipefail
+          FEED="release/win-unpacked/resources/app-update.yml"
+          if ! grep -q 'shopsys-controler-updater' "${FEED}"; then
+            echo "✗ الحزمة لا تشير إلى رف الإصدارات العام shopsys-controler-updater — لا نشر يضلّل العملاء"
+            grep -n 'repo:' "${FEED}" || true
+            exit 1
+          fi
+          if grep -q 'repo: shopsys-controler$' "${FEED}"; then
+            echo "✗ الحزمة تشير إلى المستودع الخاص (shopsys-controler) لا العام — لا نشر"
+            exit 1
+          fi
+          echo "✓ التحديث داخل المثبّت موجّه إلى الرف العام: shopsys-controler-updater"
+
       - name: عرض بصمات الملفات (SHA-256)
         shell: pwsh
         run: |
@@ -105,28 +154,86 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: إنشاء/تحديث إصدار GitHub
+      - name: صياغة ملاحظات الإصدار من الالتزامات
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          TAG="v$VERSION"
-          echo "الإصدار: $TAG"
+          TAG="${GITHUB_REF_NAME}"
+          PREV=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | head -1 || true)
+          {
+            echo "## ${TAG} — تحديث تلقائي لمركز تحكم المطور"
+            echo ""
+            if [ -n "${PREV}" ]; then
+              echo "التغييرات منذ ${PREV}:"
+              echo ""
+              git log --pretty='- %s' "${PREV}..HEAD" | head -60
+            else
+              echo "أول إصدار على هذا الرف."
+            fi
+            echo ""
+            echo "> بياناتك (المفاتيح وكلمة المرور) محفوظة على جهازك ولا تُمسّ عند التحديث."
+          } > ../release-notes.md
+          echo "=== الملاحظات ==="
+          cat ../release-notes.md
 
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "الإصدار موجود مسبقاً — سيتم تحديث الملفات"
+      - name: النشر إلى رف الإصدارات العام (shopsys-controler-updater)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(node -p "require('./package.json').version")"
+          REL="contashepo-create/shopsys-controler-updater"
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "✗ السر RELEASES_REPO_TOKEN غير مضبوط في هذا المستودع."
+            echo "  أضِفه من: Settings ← Secrets and variables ← Actions ← New repository secret"
+            echo "  بقيمة توكن يملك صلاحية Contents: Read and write على ${REL}"
+            echo "  (وبدونه لا يصل التحديث لأي جهاز — لا يكفي النجاح هنا)."
+            exit 1
+          fi
+
+          # تهيئة رف الإصدارات إن كان فارغاً: لا يمكن نشر إصدار في مستودع بلا أي التزام،
+          # فنُنشئ ملف تعريف (README فقط — بلا أي كود) عبر الـ API، وهذا ينشئ فرعه الافتراضي
+          if ! gh api "repos/${REL}/contents/README.md" >/dev/null 2>&1; then
+            echo "رف الإصدارات فارغ — تهيئة ملف التعريف (README بلا كود)"
+            B64="$(base64 -w0 ../docs/updater-repo-readme.md)"
+            gh api -X PUT "repos/${REL}/contents/README.md" \
+              -f message="رف الإصدارات: تعريف بالدور — إصدارات فقط بلا أي كود" \
+              -f content="${B64}" >/dev/null
+            echo "✓ تمت تهيئة الرف العام"
+          fi
+
+          # سلامة المخرجات قبل الرفع
+          [ -f release/latest.yml ] || { echo "✗ release/latest.yml مفقود"; exit 1; }
+          ls release/*.exe >/dev/null 2>&1 || { echo "✗ المثبّت مفقود"; exit 1; }
+          grep -q "version: ${VERSION}" release/latest.yml || { echo "✗ latest.yml بإصدار مختلف عن package.json"; exit 1; }
+          grep -q 'shopsys-controler-setup' release/latest.yml || { echo "✗ latest.yml لا يشير لملف المثبّت"; exit 1; }
+
+          # إصدار جديد أو إعادة تشغيل لنفس الوسم — clobber يستبدل الأصول
+          if gh release view "${TAG}" --repo "${REL}" >/dev/null 2>&1; then
+            echo "الإصدار ${TAG} موجود على الرف العام — سيتم تحديث ملفاته"
           else
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "مركز تحكم المطور — $TAG" \
-              --notes-file ../docs/release-notes-ar.md \
-              --verify-tag
+            gh release create "${TAG}" \
+              --repo "${REL}" \
+              --title "مركز تحكم المطور — ${TAG}" \
+              --notes-file ../release-notes.md
           fi
 
           shopt -s nullglob
-          FILES=(release/*.exe release/*.zip release/*.yml release/*.blockmap)
-          if [ ${#FILES[@]} -eq 0 ]; then echo "✖ لا ملفات للرفع"; exit 1; fi
-          gh release upload "$TAG" "${FILES[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-          echo "✅ تم رفع ${#FILES[@]} ملفاً إلى $TAG"
+          FILES=(release/*.exe release/*.zip release/latest.yml release/*.blockmap)
+          if [ ${#FILES[@]} -eq 0 ]; then echo "✗ لا ملفات للرفع"; exit 1; fi
+          gh release upload "${TAG}" --repo "${REL}" "${FILES[@]}" --clobber
+
+          # تحقق نهائي: المثبّت وفهرس التحديث معاً في نفس الإصدار
+          ASSETS=$(gh release view "${TAG}" --repo "${REL}" --json assets --jq '[.assets[].name] | join(" ")')
+          echo "أصول الإصدار على الرف العام: ${ASSETS}"
+          case "${ASSETS}" in
+            *latest.yml*) echo "✓ latest.yml مرفوع مع المثبّت — الأجهزة سترى التحديث" ;;
+            *) echo "✗ latest.yml مفقود من الإصدار — لا جهاز سيرى التحديث"; exit 1 ;;
+          esac
+          case "${ASSETS}" in
+            *shopsys-controler-setup-${VERSION}.exe*) echo "✓ المثبّت مرفوع" ;;
+            *) echo "✗ ملف المثبّت غير موجود بالاسم المتوقع"; exit 1 ;;
+          esac

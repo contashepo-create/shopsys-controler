@@ -424,12 +424,82 @@ function handleAuthVerify(hash) {
   return { ok: eq(stored.hash, hash?.hash) && eq(stored.salt, hash?.salt) }
 }
 
+/* ───────────────── بيانات المالك: لقطات تلقائية (لا تُمسّ عند التحديث) ───────────────── */
+
+/**
+ * كل ما يخصّ المالك محفوظ في مجلد userData (لا يُلمس عند تثبيت تحديث فوق القديم):
+ *   profile.json (الاسم/الهاتف/البريد) · auth.json (كلمة المرور مُهشَّرة)
+ *   config.json (الربط والإعدادات) · secrets.enc.json (مفاتيح Cloudflare/البوت/التوقيع مُشفَّرة)
+ *   audit.json · cache.json
+ * التأمين الإضافي: لقطة دورية داخل userData/config-backups/<وقت>/ تُحفظ آخر 6 لقطات،
+ * وتُؤخذ فقط عند تغيّر البيانات فعلاً — بلا أي إرسال للخارج (كلها على جهازك).
+ */
+const DATA_FILES = ['profile.json', 'auth.json', 'config.json', 'secrets.enc.json', 'audit.json', 'cache.json']
+const MAX_SNAPSHOTS = 6
+
+function dataFingerprint() {
+  const h = crypto.createHash('sha256')
+  for (const f of DATA_FILES) {
+    try {
+      h.update(f).update(':').update(fs.readFileSync(jsonPath(f))).update('|')
+    } catch { /* لم يُنشأ الملف بعد */ }
+  }
+  return h.digest('hex').slice(0, 16)
+}
+
+function snapshotData(force = false) {
+  try {
+    const root = path.join(userDir(), 'config-backups')
+    fs.mkdirSync(root, { recursive: true })
+    const stateFile = path.join(root, 'state.json')
+    let prev = null
+    try { prev = JSON.parse(fs.readFileSync(stateFile, 'utf8')) } catch { /* أول مرة */ }
+
+    const fingerprint = dataFingerprint()
+    if (!force && prev && prev.fingerprint === fingerprint && prev.at) {
+      return { created: false, fingerprint, at: prev.at }
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const box = path.join(root, stamp)
+    fs.mkdirSync(box, { recursive: true })
+    let copied = 0
+    for (const f of DATA_FILES) {
+      try { fs.copyFileSync(jsonPath(f), path.join(box, f)); copied++ } catch { /* غير موجود */ }
+    }
+    fs.writeFileSync(stateFile, JSON.stringify({ fingerprint, at: stamp, copied }), 'utf8')
+
+    const boxes = fs.readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory()).map((d) => d.name).sort()
+    for (const old of boxes.slice(0, Math.max(0, boxes.length - MAX_SNAPSHOTS))) {
+      fs.rmSync(path.join(root, old), { recursive: true, force: true })
+    }
+    return { created: true, fingerprint, at: stamp, copied }
+  } catch (e) {
+    console.warn('[controler] تعذّر أخذ لقطة بيانات:', e.message)
+    return { created: false, error: e.message }
+  }
+}
+
+function dataInfo() {
+  const root = path.join(userDir(), 'config-backups')
+  let state = null
+  let count = 0
+  try { state = JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8')) } catch { /* لا لقطات */ }
+  try { count = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).length } catch { /* لا مجلد */ }
+  return { path: userDir(), backupsPath: root, backups: count, lastBackupAt: state?.at ?? null }
+}
+
 /* ───────────────────────── التحديث التلقائي (GitHub Releases) ───────────────────────── */
 
 /**
  * يعمل في النسخة المثبّتة فقط (تحتاج resources/app-update.yml المولَّد من electron-builder).
- * المستودع عام ⇒ لا توكن مطلوب للقراءة. التنزيل يدويّ بإرادة المالك (autoDownload=false)
- * حتى لا تُسحب 110 ميجابايت في الخلفية بلا إذن.
+ *
+ * الوجهة: رف الإصدارات العام `shopsys-controler-updater` — **مستودع بلا أي كود**
+ * (إصدارات فقط)؛ لهذا القراءة بلا توكن، وكود اللوحة يبقى في المستودع الخاص.
+ *
+ * السلوك (طلب المالك): التنزيل **في الخلفية** بلا إزعاج، والتثبيت **عند إغلاق التطبيق**.
+ * وبيانات المالك (المفاتيح وكلمة المرور) في userData لا تُمسّ — فوق ذلك لقطة نسخ
+ * احتياطية دورية في userData/config-backups (انظر snapshotData).
  */
 let mainWindow = null
 let autoUpdaterRef = null
@@ -458,8 +528,10 @@ function setupAutoUpdater() {
   try {
     const { autoUpdater } = require('electron-updater')
     autoUpdaterRef = autoUpdater
-    autoUpdater.autoDownload = false
-    autoUpdater.autoInstallOnAppQuit = true
+    autoUpdater.autoDownload = true        // طلب المالك: التنزيل في الخلفية تلقائياً
+    autoUpdater.autoInstallOnAppQuit = true // وتركيب التحديث عند إغلاق اللوحة
+    autoUpdater.allowDowngrade = false      // لا رجوع لإصدار أقدم
+    autoUpdater.allowPrerelease = false     // الإصدارات المستقرة فقط
     autoUpdater.logger = null
 
     autoUpdater.on('checking-for-update', () => pushUpdateState({ status: 'checking', error: null }))
@@ -483,6 +555,12 @@ function setupAutoUpdater() {
 
 const HANDLERS = {
   'app:version': () => app.getVersion(),
+  'app:dataInfo': () => dataInfo(),
+  'app:openDataFolder': async () => {
+    const r = await shell.openPath(userDir())
+    return r ? { ok: false, error: r } : { ok: true }
+  },
+  'app:snapshotData': () => snapshotData(true),
   'update:state': () => updateState,
   'update:check': async () => {
     if (!app.isPackaged) return { ok: false, error: 'فحص التحديثات يعمل في النسخة المثبّتة فقط' }
@@ -627,6 +705,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   registerIpc()
+  snapshotData()      // تأمين بيانات المالك قبل أي شيء (لا يعطّل الإقلاع عند الفشل)
   setupAutoUpdater()
   createWindow()
   app.on('activate', () => {

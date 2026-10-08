@@ -21,17 +21,28 @@ win:
     - target: nsis
       arch:
         - x64
+# ⚠️ ثوابت لا تُغيَّر أبداً (تغييرها = ضياع بيانات المالك عند التحديث):
+#   · appId  = com.contashepo.shopsys-controler
+#   · name   = shopsys-controler  (منه يُشتق مجلد البيانات %APPDATA%\shopsys-controler)
+#   · productName + appId نفسهما في كل إصدار ⇒ التحديث يثبّت فوق القديم
 nsis:
   license: desktop/build/license.txt
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   shortcutName: تحكم المطور
+  # البيانات (المفاتيح وكلمة المرور والسجل) في مجلد بيانات المستخدم — لا تُحذف عند الإزالة
+  # (وليس فقط عند التحديث) حتى لا يفقد المالك مفاتيحه لو أزال وثبّت من جديد
+  deleteAppDataOnUninstall: false
+  # التثبيت الصامت هو ما يستخدمه electron-updater عند دمج التحديث
+  allowElevation: true
   artifactName: shopsys-controler-setup-${version}.${ext}
   # لا توقيع رقمي (شهادة مدفوعة) — ويندوز سيعرض تحذير SmartScreen طبيعياً
   # التحديث التلقائي — مرحلة لاحقة عبر إصدارات نفس المستودع
+# وجهة التحديث التلقائي: رف الإصدارات **العام** — مستودع بلا أي كود (إصدارات فقط)
+# حتى لا يقرأ أحد كود اللوحة، ويبقى مصدرها في المستودع الخاص بلا توكن يحتاجه العميل.
 publish:
   provider: github
   owner: contashepo-create
-  repo: shopsys-controler
+  repo: shopsys-controler-updater
   releaseType: release

@@ -121,9 +121,22 @@ export interface UpdateAction {
   error?: string
 }
 
+/** معلومات بيانات المالك المحفوظة على الجهاز (لا تُمسّ عند التحديث) */
+export interface DataInfo {
+  path: string
+  backupsPath: string
+  backups: number
+  lastBackupAt: string | null
+}
+
 export interface ControlerBridge {
   runtime: 'electron' | 'web'
-  app: { version(): Promise<string> }
+  app: {
+    version(): Promise<string>
+    dataInfo(): Promise<DataInfo>
+    openDataFolder(): Promise<{ ok: boolean; error?: string }>
+    snapshotData(): Promise<{ created: boolean; at?: string; error?: string }>
+  }
   setup: { isComplete(): Promise<{ hasProfile: boolean; hasPassword: boolean }> }
   profile: { get(): Promise<DeveloperProfile | null>; save(p: DeveloperProfile): Promise<void> }
   auth: { setPassword(h: PasswordHash): Promise<void>; verifyPassword(h: PasswordHash): Promise<boolean> }
@@ -174,7 +187,12 @@ function webBridge(): ControlerBridge {
   }
   return {
     runtime: 'web',
-    app: { version: async () => '0.1.0-web' },
+    app: {
+      version: async () => '0.1.0-web',
+      dataInfo: async () => ({ path: '—', backupsPath: '—', backups: 0, lastBackupAt: null }),
+      openDataFolder: async () => notDesktop(),
+      snapshotData: async () => notDesktop(),
+    },
     setup: {
       isComplete: async () => ({
         hasProfile: read<DeveloperProfile | null>('controler:profile', null) != null,
@@ -239,7 +257,12 @@ function desktopBridge(): ControlerBridge | null {
     (w[channel] as (...a: unknown[]) => Promise<unknown>)(...args) as Promise<T>
   return {
     runtime: 'electron',
-    app: { version: () => invoke<string>('app:version') },
+    app: {
+      version: () => invoke<string>('app:version'),
+      dataInfo: () => invoke('app:dataInfo'),
+      openDataFolder: () => invoke('app:openDataFolder'),
+      snapshotData: () => invoke('app:snapshotData'),
+    },
     setup: { isComplete: () => invoke('setup:isComplete') },
     profile: { get: () => invoke('profile:get'), save: (p) => invoke('profile:save', p) },
     auth: { setPassword: (h) => invoke('auth:setPassword', h), verifyPassword: (h) => invoke('auth:verifyPassword', h) },

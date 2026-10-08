@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { bridge, isDesktop } from '../../data/bridge.ts'
+import { bridge, isDesktop, type DataInfo } from '../../data/bridge.ts'
 import { useConfigStore } from '../../stores/config.store.ts'
 import { useSessionStore } from '../../stores/session.store.ts'
 import { maskToken, isValidBotToken, isValidChatId } from '../../core/telegramAdmin.ts'
@@ -40,6 +40,13 @@ export function SettingsPage() {
   const [cfTesting, setCfTesting] = useState(false)
   const [confirmForget, setConfirmForget] = useState(false)
   const { state: updateState, init: initUpdates, check: checkUpdates, download: downloadUpdate, install: installUpdate } = useUpdatesStore()
+  const [dataInfo, setDataInfo] = useState<DataInfo | null>(null)
+
+  // بيانات المالك المحفوظة على الجهاز (لا تُمسّ عند التحديث) + اللقطات الاحتياطية
+  useEffect(() => {
+    if (!isDesktop) return
+    void bridge.app.dataInfo().then(setDataInfo).catch(() => setDataInfo(null))
+  }, [])
   const [nsList, setNsList] = useState<CfNamespaceInfo[]>([])
   const [nsBusy, setNsBusy] = useState(false)
   const [nsError, setNsError] = useState<string | null>(null)
@@ -337,7 +344,7 @@ export function SettingsPage() {
         <div className="card-title">
           🔄 التحديثات
           <Badge kind={updateState?.status === 'available' || updateState?.status === 'ready' ? 'warn' : 'muted'}>
-            {updateState?.status === 'available' ? `متاح ${updateState.version}`
+            {updateState?.status === 'available' ? `تنزيل تلقائي ${updateState.version}`
               : updateState?.status === 'ready' ? `جاهز ${updateState.version}`
               : updateState?.status === 'downloading' ? `جارٍ التنزيل ${updateState.percent}%`
               : updateState?.status === 'latest' ? 'أحدث إصدار'
@@ -347,7 +354,11 @@ export function SettingsPage() {
         </div>
         <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
           النسخة الحالية: <b className="mono">{updateState?.currentVersion ?? __APP_VERSION__}</b> — يفحص التطبيق
-          مستودع GitHub تلقائياً بعد الإقلاع ثم كل 6 ساعات، والتنزيل لا يبدأ إلا بموافقتك.
+          رف الإصدارات <b>العام</b> تلقائياً بعد الإقلاع ثم كل 6 ساعات، ويُنزّل التحديث <b>في الخلفية</b>،
+          ثم يُثبَّته <b>عند إغلاق اللوحة</b>. لا حاجة لأي إجراء منك (ويمكنك التثبيت فوراً بالزر أدناه).
+          <br />
+          مصدر التحديث: <span className="mono">github.com/contashepo-create/shopsys-controler-updater</span>
+          {' '}(مستودع بلا كود) — وكود اللوحة يبقى في المستودع الخاص.
         </div>
         {updateState?.error && updateState.status !== 'unsupported' ? (
           <div className="notice notice-danger" style={{ display: 'block' }}>{updateState.error}</div>
@@ -358,8 +369,47 @@ export function SettingsPage() {
             <Btn kind="primary" onClick={() => void downloadUpdate().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر التنزيل', 'error') })}>تنزيل التحديث</Btn>
           ) : null}
           {updateState?.status === 'ready' ? (
-            <Btn kind="primary" onClick={() => void installUpdate()}>إعادة التشغيل والتثبيت</Btn>
+            <Btn kind="primary" onClick={() => void installUpdate()}>إعادة التشغيل والتثبيت الآن</Btn>
           ) : null}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">
+          💾 بياناتك لا تضيع مع التحديث
+          <Badge kind={dataInfo && dataInfo.backups > 0 ? 'ok' : 'muted'}>
+            {dataInfo ? `${dataInfo.backups} لقطة احتياطية` : 'غير متاح في المتصفح'}
+          </Badge>
+        </div>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
+          اسمك وكلمة مرورك ومفاتيح Cloudflare والبوت ومفتاح التوقيع محفوظة في مجلد بياناتك على جهازك،
+          و<b>تحديث النسخة يثبّت فوق القديم دون أن يمسّها</b> — لن تعيد كتابة أي منها. وفوق ذلك يأخذ
+          التطبيق لقطة احتياطية تلقائية عند كل تشغيل تغيّرت فيه البيانات (آخر 6 لقطات محفوظة).
+        </div>
+        {dataInfo ? (
+          <div className="muted" style={{ fontSize: 12, marginBlockEnd: 10 }}>
+            المسار: <span className="mono" dir="ltr">{dataInfo.path}</span>
+            {dataInfo.lastBackupAt ? <><br />آخر لقطة: <span className="mono" dir="ltr">{dataInfo.lastBackupAt}</span></> : null}
+          </div>
+        ) : null}
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <Btn
+            disabled={!isDesktop}
+            onClick={() => void bridge.app.openDataFolder().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر فتح المجلد', 'error') })}
+          >
+            📂 فتح مجلد البيانات
+          </Btn>
+          <Btn
+            kind="primary"
+            disabled={!isDesktop}
+            onClick={() => void bridge.app.snapshotData().then((r) => {
+              if (r.error) { toast(r.error, 'error'); return }
+              toast(r.created ? 'تم أخذ لقطة احتياطية الآن' : 'البيانات بلا تغيير — اللقطة السابقة كافية', 'ok')
+              void bridge.app.dataInfo().then(setDataInfo).catch(() => {})
+            })}
+          >
+            🛡️ نسخة احتياطية الآن
+          </Btn>
         </div>
       </div>
 
