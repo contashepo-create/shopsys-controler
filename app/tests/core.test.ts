@@ -10,7 +10,10 @@ import { buildNotice, appendNotice, parseNoticeList, resolveTargetDevices, valid
 import { appendChatMessage, parseChat, hasUnreadFromClient, cleanSupportText, validateReply, CHAT_KEEP } from '../src/core/support.ts'
 import { createKvClient, listAllKeys, KvError } from '../src/core/kv.ts'
 import { isValidBotToken, isValidChatId, maskToken, buildOtpSendError } from '../src/core/telegramAdmin.ts'
-import { isValidCfAccountId, isValidCfNamespaceId, validateProfile, isHttpsUrl } from '../src/core/settings.ts'
+import {
+  isValidCfAccountId, isValidCfNamespaceId, validateProfile, isHttpsUrl,
+  suggestNamespaceRoles, servicesBindingSnippet,
+} from '../src/core/settings.ts'
 import { sanitizeDetails, describeAudit } from '../src/core/audit.ts'
 import { issueActivityChangeKey, ACTIVITY_KEY_PREFIX, b64uDecode } from '../src/core/license.ts'
 
@@ -288,9 +291,10 @@ describe('عميل Cloudflare KV', () => {
     await expect(client.get('license', 'x')).rejects.toThrow(/مرفوض|غير صالح/)
   })
 
-  it('namespace مفقود ⇒ خطأ قبل أي طلب', async () => {
+  it('مساحة ناقصة ⇒ خطأ برمز ns_missing قبل أي طلب', async () => {
     const client = createKvClient({ ...cfg, namespaces: { license: '', services: '' } }, (async () => new Response('')) as unknown as typeof fetch)
-    await expect(client.get('license', 'x')).rejects.toThrow(/namespace/)
+    await expect(client.get('license', 'x')).rejects.toMatchObject({ code: 'ns_missing' })
+    await expect(client.get('license', 'x')).rejects.toThrow(/غير مضبوطة/)
   })
 
   it('listAllKeys يتبع الصفحات حتى النهاية', async () => {
@@ -368,5 +372,94 @@ describe('مفتاح تغيير النشاط', () => {
     const decoded = JSON.parse(new TextDecoder().decode(b64uDecode(parts[1])))
     expect(decoded.toActivityId).toBe('pharmacy')
     expect(parts[2]).not.toContain('=')
+  })
+})
+
+/* ─── اكتشاف مساحات KV وترشيح الأدوار ─── */
+
+describe('اكتشاف مساحات Cloudflare وترشيحها', () => {
+  const ns = (title: string, id: string) => ({ id, title })
+
+  it('يطابق الأسماء الرسمية بدقة', () => {
+    const list = [ns('SHOPSYS_CONTROL', 'a'.repeat(32)), ns('SHOPSYS_KV', 'b'.repeat(32))]
+    const out = suggestNamespaceRoles(list)
+    expect(out.find((x) => x.role === 'license')).toMatchObject({ namespaceId: 'a'.repeat(32), confidence: 'exact' })
+    expect(out.find((x) => x.role === 'services')).toMatchObject({ namespaceId: 'b'.repeat(32), confidence: 'exact' })
+  })
+
+  it('يبقى ما هو مضبوط حالياً ولا يغيّره', () => {
+    const list = [ns('SHOPSYS_CONTROL', 'c'.repeat(32)), ns('SHOPSYS_KV', 'd'.repeat(32))]
+    const out = suggestNamespaceRoles(list, { license: 'c'.repeat(32), services: '' })
+    expect(out.find((x) => x.role === 'license')?.namespaceId).toBe('c'.repeat(32))
+    expect(out.find((x) => x.role === 'services')?.namespaceId).toBe('d'.repeat(32))
+  })
+
+  it('أسماء مختلفة: يرجّح من الكلمات المميزة (CONTROL / KV)', () => {
+    const list = [ns('shopsys-control-prod', 'e'.repeat(32)), ns('global-kv-store', 'f'.repeat(32))]
+    const out = suggestNamespaceRoles(list)
+    expect(out.find((x) => x.role === 'license')).toMatchObject({ namespaceId: 'e'.repeat(32), confidence: 'guess' })
+    expect(out.find((x) => x.role === 'services')).toMatchObject({ namespaceId: 'f'.repeat(32), confidence: 'guess' })
+  })
+
+  it('غياب مساحة الخدمات ⇒ none (هذه حالة المالك الآن) + إرشاد بالنص المتوقع', () => {
+    const list = [ns('SHOPSYS_CONTROL', '1'.repeat(32))]
+    const out = suggestNamespaceRoles(list)
+    const services = out.find((x) => x.role === 'services')
+    expect(services?.namespaceId).toBeNull()
+    expect(services?.confidence).toBe('none')
+    expect(services?.reasonAr).toContain('SHOPSYS_KV')
+  })
+
+  it('مساحة واحدة حرّة بلا علامة مميزة ⇒ تُمنح للتراخيص (الأساسية)', () => {
+    const list = [ns('my-store-data', '2'.repeat(32))]
+    const out = suggestNamespaceRoles(list)
+    expect(out.find((x) => x.role === 'license')).toMatchObject({ namespaceId: '2'.repeat(32), confidence: 'guess' })
+    expect(out.find((x) => x.role === 'services')?.namespaceId).toBeNull()
+  })
+
+  it('مساحة واحدة باسم يحتوي KV ⇒ تُرشَّح للخدمات (العلامة المميزة تُقدَّم)', () => {
+    const list = [ns('my-kv-store', '3'.repeat(32))]
+    const out = suggestNamespaceRoles(list)
+    expect(out.find((x) => x.role === 'services')).toMatchObject({ namespaceId: '3'.repeat(32), confidence: 'guess' })
+    expect(out.find((x) => x.role === 'license')?.namespaceId).toBeNull()
+  })
+
+  it('حساب فارغ ⇒ لا ترشيحات ولا انهيار', () => {
+    const out = suggestNamespaceRoles([])
+    expect(out).toHaveLength(2)
+    expect(out.every((x) => x.namespaceId === null)).toBe(true)
+  })
+
+  it('مقتطف الربط يحتوي الصيغة الصحيحة للـ wrangler', () => {
+    const snippet = servicesBindingSnippet('9'.repeat(32))
+    expect(snippet).toContain('cloud/wrangler.toml')
+    expect(snippet).toContain('binding = "SHOPSYS_KV"')
+    expect(snippet).toContain(`id = "${'9'.repeat(32)}"`)
+    expect(snippet).toContain('wrangler deploy')
+  })
+})
+
+/* ─── رموز أخطاء KV ─── */
+
+describe('رموز أخطاء مساحات KV', () => {
+  const cfg = { accountId: 'a'.repeat(32), apiToken: 'tok', namespaces: { license: '', services: 'svc' } }
+
+  it('مساحة التراخيص الناقصة ⇒ كود ns_missing برسالة إرشادية', async () => {
+    const client = createKvClient(cfg, (async () => new Response('')) as unknown as typeof fetch)
+    await expect(client.get('license', 'x')).rejects.toMatchObject({ code: 'ns_missing' })
+    await expect(client.get('license', 'x')).rejects.toThrow(/الإعدادات/)
+  })
+
+  it('مساحة الخدمات الناقصة ⇒ كود ns_missing بالاسم الصريح', async () => {
+    const client = createKvClient({ ...cfg, namespaces: { license: 'lic', services: '' } }, (async () => new Response('')) as unknown as typeof fetch)
+    await expect(client.get('services', 'chat:X')).rejects.toThrow(/SHOPSYS_KV/)
+  })
+
+  it('غياب المساحة لا يستهلك أي طلب شبكة', async () => {
+    let calls = 0
+    const fakeFetch = (async () => { calls += 1; return new Response('') }) as unknown as typeof fetch
+    const client = createKvClient(cfg, fakeFetch)
+    await client.get('license', 'x').catch(() => {})
+    expect(calls).toBe(0)
   })
 })

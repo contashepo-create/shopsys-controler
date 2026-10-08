@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useDataStore } from '../../stores/data.store.ts'
 import { readCloudFlags, setCloudFlag } from '../../data/actions.ts'
 import { FEATURE_LABELS_AR, MODULE_LABELS_AR, LICENSE_FEATURES, type LicenseFeature } from '../../core/license.ts'
@@ -14,7 +15,7 @@ import { IssueDialog } from './CustomersPage.tsx'
  */
 export function FeaturesPage() {
   const toast = useToast()
-  const { customers, refresh, loading } = useDataStore()
+  const { customers, refresh, loading, servicesAvailable } = useDataStore()
   const [selectedId, setSelectedId] = useState<string>('')
   const [flags, setFlags] = useState<{ disabledFeatures: string[]; noteAr: string }>({ disabledFeatures: [], noteAr: '' })
   const [busy, setBusy] = useState(false)
@@ -79,6 +80,15 @@ export function FeaturesPage() {
 
           <div className="card">
             <div className="card-title">⚡ إطفاء مؤقت من السحابة (بدون مفتاح جديد)</div>
+            {!servicesAvailable ? (
+              <div className="notice notice-warn" style={{ display: 'block' }}>
+                يحتاج هذا القسم مساحة الخدمات <span className="mono">SHOPSYS_KV</span> (الأعلام السحابية) وهي غير مضبوطة.
+                <div style={{ marginBlockStart: 8 }}><Link className="btn btn-sm" to="/settings">اضبطها من الإعدادات</Link></div>
+                <div className="muted" style={{ fontSize: 12.5, marginBlockStart: 8 }}>
+                  بديل يعمل الآن: «تعديل الميزات» — يصدر مفتاحاً جديداً بالصلاحيات المطلوبة.
+                </div>
+              </div>
+            ) : null}
             <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
               يعمل على الميزات الممنوحة فقط — كما في أمر البوت «عطل / فعل». مناسب لمتأخرات السداد مثلاً.
             </div>
@@ -93,8 +103,8 @@ export function FeaturesPage() {
                   </span>
                   {granted ? (
                     disabled
-                      ? <Btn size="sm" kind="primary" disabled={busy} onClick={() => void toggleFlag(f, false)}>إعادة تفعيل</Btn>
-                      : <Btn size="sm" kind="danger" disabled={busy} onClick={() => void toggleFlag(f, true)}>إطفاء</Btn>
+                      ? <Btn size="sm" kind="primary" disabled={busy || !servicesAvailable} onClick={() => void toggleFlag(f, false)}>إعادة تفعيل</Btn>
+                      : <Btn size="sm" kind="danger" disabled={busy || !servicesAvailable} onClick={() => void toggleFlag(f, true)}>إطفاء</Btn>
                   ) : <Badge kind="muted">—</Badge>}
                 </div>
               )

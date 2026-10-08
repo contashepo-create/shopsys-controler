@@ -32,22 +32,49 @@ export interface SecretsPatch {
   cfNsServices?: string
 }
 
+/** رموز أخطاء موحّدة بين العملية الرئيسية والواجهة */
+export type CfErrorCode = 'ns_missing' | 'no_token' | 'no_account' | 'auth' | 'cf_error'
+
 export interface CfListResult {
   ok: boolean
   keys: string[]
   cursor: string | null
   error?: string
+  code?: CfErrorCode
 }
 
 export interface CfGetResult {
   ok: boolean
   value: string | null
   error?: string
+  code?: CfErrorCode
 }
 
 export interface CfWriteResult {
   ok: boolean
   error?: string
+  code?: CfErrorCode
+}
+
+export interface CfNamespaceInfo {
+  id: string
+  title: string
+}
+
+export interface CfNamespacesResult {
+  ok: boolean
+  namespaces: CfNamespaceInfo[]
+  accountId?: string
+  error?: string
+  code?: CfErrorCode
+}
+
+export interface CfNamespaceCreateResult {
+  ok: boolean
+  id?: string
+  title?: string
+  error?: string
+  code?: CfErrorCode
 }
 
 export interface TgSendResult {
@@ -90,6 +117,8 @@ export interface ControlerBridge {
     put(ns: KvNamespace, key: string, value: string): Promise<CfWriteResult>
     delete(ns: KvNamespace, key: string): Promise<CfWriteResult>
     test(): Promise<{ ok: boolean; error?: string }>
+    namespaces(): Promise<CfNamespacesResult>
+    createNamespace(title: string): Promise<CfNamespaceCreateResult>
   }
   tg: { send(text: string): Promise<TgSendResult>; getMe(): Promise<TgMeResult> }
   license: { sign(payloadJson: string): Promise<LicenseSignResult>; checkKey(): Promise<LicenseCheckResult> }
@@ -153,6 +182,8 @@ function webBridge(): ControlerBridge {
       put: async () => notDesktop(),
       delete: async () => notDesktop(),
       test: async () => notDesktop(),
+        namespaces: async () => notDesktop(),
+        createNamespace: async () => notDesktop(),
     },
     tg: { send: async () => notDesktop(), getMe: async () => notDesktop() },
     license: { sign: async () => notDesktop(), checkKey: async () => notDesktop() },
@@ -187,6 +218,8 @@ function desktopBridge(): ControlerBridge | null {
       put: (ns, key, value) => invoke('cf:request', { ns, op: 'put', key, value }),
       delete: (ns, key) => invoke('cf:request', { ns, op: 'delete', key }),
       test: () => invoke('cf:test'),
+      namespaces: () => invoke('cf:namespaces'),
+      createNamespace: (title) => invoke('cf:namespaceCreate', title),
     },
     tg: { send: (text) => invoke('tg:send', text), getMe: () => invoke('tg:getMe') },
     license: { sign: (payloadJson) => invoke('license:sign', payloadJson), checkKey: () => invoke('license:checkKey') },

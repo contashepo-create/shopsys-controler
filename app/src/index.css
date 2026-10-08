@@ -272,6 +272,23 @@ body {
 .toast.error { border-inline-start-color: var(--danger); }
 .toast.ok { border-inline-start-color: var(--ok); }
 
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13.5px;
+  margin-block-end: 14px;
+  line-height: 1.6;
+}
+.notice-warn { border-inline-start: 4px solid var(--warn); }
+.notice-danger { border-inline-start: 4px solid var(--danger); }
+.notice-ok { border-inline-start: 4px solid var(--ok); }
+
 .empty {
   text-align: center;
   padding: 40px 20px;

@@ -3,7 +3,11 @@ import { bridge, isDesktop } from '../../data/bridge.ts'
 import { useConfigStore } from '../../stores/config.store.ts'
 import { useSessionStore } from '../../stores/session.store.ts'
 import { maskToken, isValidBotToken, isValidChatId } from '../../core/telegramAdmin.ts'
-import { isValidCfAccountId, isValidCfNamespaceId, validateProfile, DEFAULT_BINDING, LICENSE_NS_DEFAULT } from '../../core/settings.ts'
+import {
+  isValidCfAccountId, isValidCfNamespaceId, validateProfile, DEFAULT_BINDING, LICENSE_NS_DEFAULT,
+  suggestNamespaceRoles, servicesBindingSnippet, ROLE_LABELS_AR, ROLE_PURPOSE_AR,
+  type CfNamespaceInfo, type NamespaceRole,
+} from '../../core/settings.ts'
 import { audit } from '../../data/actions.ts'
 import { Btn, Field, useToast, Badge, ConfirmDialog } from '../components/ui.tsx'
 import { DEV_PUBLIC_KEY_LABEL } from '../../core/licenseInfo.ts'
@@ -11,7 +15,11 @@ import { DEV_PUBLIC_KEY_LABEL } from '../../core/licenseInfo.ts'
 export function SettingsPage() {
   const toast = useToast()
   const { profile, setProfile, theme, setTheme } = useSessionStore()
-  const { cfAccountId, cfNsLicense, cfNsServices, hasCfToken, hasPrivateKey, publicKeyMatches, adminChatId, hasBotToken, botUsername, saveSecrets, refreshBot } = useConfigStore()
+  const {
+    cfAccountId, cfNsLicense, cfNsServices, hasCfToken, hasPrivateKey, publicKeyMatches,
+    adminChatId, hasBotToken, botUsername, saveSecrets, refreshBot,
+    discoverNamespaces, createNamespace: createNs, checkKv,
+  } = useConfigStore()
 
   const [name, setName] = useState(profile?.name ?? '')
   const [phone, setPhone] = useState(profile?.phone ?? '')
@@ -30,9 +38,70 @@ export function SettingsPage() {
   const [busy, setBusy] = useState(false)
   const [cfTesting, setCfTesting] = useState(false)
   const [confirmForget, setConfirmForget] = useState(false)
+  const [nsList, setNsList] = useState<CfNamespaceInfo[]>([])
+  const [nsBusy, setNsBusy] = useState(false)
+  const [nsError, setNsError] = useState<string | null>(null)
+  const [createdNs, setCreatedNs] = useState<string | null>(null)
 
   useEffect(() => { setAccountId(cfAccountId); setNsLicense(cfNsLicense || LICENSE_NS_DEFAULT); setNsServices(cfNsServices); setChatId(adminChatId) }, [cfAccountId, cfNsLicense, cfNsServices, adminChatId])
   useEffect(() => { void bridge.license.checkKey().then(setKeyStatus) }, [hasPrivateKey])
+
+  /** يجلب المساحات من Cloudflare ويرشّح دور كل واحدة تلقائياً ثم يملأ الحقول */
+  async function discover() {
+    setNsBusy(true)
+    setNsError(null)
+    try {
+      const list = await discoverNamespaces()
+      setNsList(list)
+      if (list.length === 0) {
+        setNsError('لا توجد أي مساحة KV في هذا الحساب — أنشئ مساحة الخدمات بالزر أدناه')
+        setNsBusy(false)
+        return
+      }
+      const suggestions = suggestNamespaceRoles(list, { license: nsLicense.trim(), services: nsServices.trim() })
+      for (const sug of suggestions) {
+        if (!sug.namespaceId) continue
+        if (sug.role === 'license' && !nsLicense.trim()) setNsLicense(sug.namespaceId)
+        if (sug.role === 'services' && !nsServices.trim()) setNsServices(sug.namespaceId)
+      }
+      const remaining = suggestions.filter((x) => !x.namespaceId).map((x) => ROLE_LABELS_AR[x.role])
+      toast(
+        remaining.length
+          ? `وُجدت ${list.length} مساحة — تحتاج تحديد: ${remaining.join('، ')}`
+          : `✅ تعرّفت على المساحتين من الحساب (${list.length} مساحة متاحة)`,
+        remaining.length ? 'info' : 'ok',
+      )
+    } catch (e) {
+      setNsError(e instanceof Error ? e.message : String(e))
+    }
+    setNsBusy(false)
+  }
+
+  /** إنشاء مساحة الخدمات SHOPSYS_KV مباشرة من اللوحة */
+  async function createServicesNs() {
+    setNsBusy(true)
+    setNsError(null)
+    try {
+      const res = await createNs('SHOPSYS_KV')
+      if (!res.ok || !res.id) {
+        setNsError(res.error ?? 'تعذر إنشاء المساحة')
+        setNsBusy(false)
+        return
+      }
+      setNsServices(res.id)
+      setNsList(await discoverNamespaces())
+      setCreatedNs(res.id)
+      toast('✅ أُنشئت مساحة الخدمات SHOPSYS_KV — اسمح الربط أدناه', 'ok')
+    } catch (e) {
+      setNsError(e instanceof Error ? e.message : String(e))
+    }
+    setNsBusy(false)
+  }
+
+  function assign(role: NamespaceRole, id: string) {
+    if (role === 'license') setNsLicense(id)
+    else setNsServices(id)
+  }
 
   async function saveProfile() {
     const err = validateProfile({ name, phone, email })
@@ -60,6 +129,7 @@ export function SettingsPage() {
       await audit('cf_settings_update', undefined, { accountId: accountId.trim() })
       toast('تم حفظ إعدادات Cloudflare ✓', 'ok')
       setCfToken('')
+      void checkKv()
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setBusy(false)
   }
@@ -137,16 +207,97 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-title">☁️ إعدادات Cloudflare <Badge kind={hasCfToken && cfAccountId ? 'ok' : 'warn'}>{hasCfToken && cfAccountId ? 'مضبوط' : 'ناقص'}</Badge></div>
-        <Field label="Account ID" value={accountId} onChange={setAccountId} mono hint="32 حرفاً hex" />
-        <Field label="API Token" value={cfToken} onChange={setCfToken} type="password" mono hint={hasCfToken ? 'محفوظ مشفراً — اكتب توكن جديداً للتغيير' : 'بصلاحية KV Read & Write على الاسمين'} />
-        <div className="grid-2">
-          <Field label="namespace الترخيص" value={nsLicense} onChange={setNsLicense} mono hint="SHOPSYS_CONTROL — الافتراضي من البوت" />
-          <Field label="namespace الخدمات" value={nsServices} onChange={setNsServices} mono hint="SHOPSYS_KV — للدعم والأعلام و«حول»" />
+      <div className="card" style={{ gridColumn: '1 / -1' }}>
+        <div className="card-title">
+          ☁️ إعدادات Cloudflare
+          <Badge kind={hasCfToken && cfAccountId ? 'ok' : 'warn'}>{hasCfToken && cfAccountId ? 'الحساب مضبوط' : 'الحساب ناقص'}</Badge>
         </div>
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <Btn onClick={() => void testCloudflare()} disabled={cfTesting || !hasCfToken}>{cfTesting ? 'جارٍ الاختبار…' : 'اختبار الاتصال'}</Btn>
+
+        <div className="grid-2">
+          <Field label="Account ID" value={accountId} onChange={setAccountId} mono hint="32 حرفاً hex — صفحة الحساب في Cloudflare" />
+          <Field label="API Token" value={cfToken} onChange={setCfToken} type="password" mono
+            hint={hasCfToken ? 'محفوظ مشفراً — اكتب توكن جديداً للتغيير. الصلاحية: Workers KV Storage (Read + Write)' : 'الصلاحية المطلوبة: Workers KV Storage — Read و Write'} />
+        </div>
+
+        <div className="hr" />
+        <div className="row" style={{ justifyContent: 'space-between', marginBlockEnd: 10 }}>
+          <b>مساحات KV (Namespaces)</b>
+          <div className="row">
+            <Btn size="sm" onClick={() => void discover()} disabled={nsBusy || !hasCfToken || !accountId.trim()}>
+              {nsBusy ? '…' : '🔍 اكتشف من الحساب'}
+            </Btn>
+            <Btn size="sm" onClick={() => void testCloudflare()} disabled={cfTesting || !hasCfToken}>
+              {cfTesting ? '…' : 'اختبار الاتصال'}
+            </Btn>
+          </div>
+        </div>
+
+        {nsError ? <div className="notice notice-danger" style={{ marginBlockEnd: 10 }}>{nsError}</div> : null}
+
+        <div className="grid-2">
+          <div className="card" style={{ background: 'var(--bg-soft)' }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <b>{ROLE_LABELS_AR.license}</b>
+              <Badge kind={nsLicense.trim() ? 'ok' : 'danger'}>{nsLicense.trim() ? 'مضبوطة' : 'ناقصة'}</Badge>
+            </div>
+            <div className="muted" style={{ fontSize: 12.5, marginBlock: '6px 10px' }}>{ROLE_PURPOSE_AR.license}</div>
+            <input className="input input-mono" value={nsLicense} dir="ltr" placeholder="SHOPSYS_CONTROL id"
+              onChange={(e) => setNsLicense(e.target.value)} />
+            <div className="muted" style={{ fontSize: 12, marginBlockStart: 6 }}>الاسم المتوقع: <span className="mono">SHOPSYS_CONTROL</span></div>
+          </div>
+
+          <div className="card" style={{ background: 'var(--bg-soft)' }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <b>{ROLE_LABELS_AR.services}</b>
+              <Badge kind={nsServices.trim() ? 'ok' : 'danger'}>{nsServices.trim() ? 'مضبوطة' : 'ناقصة'}</Badge>
+            </div>
+            <div className="muted" style={{ fontSize: 12.5, marginBlock: '6px 10px' }}>{ROLE_PURPOSE_AR.services}</div>
+            <input className="input input-mono" value={nsServices} dir="ltr" placeholder="SHOPSYS_KV id"
+              onChange={(e) => setNsServices(e.target.value)} />
+            <div className="row" style={{ justifyContent: 'space-between', marginBlockStart: 6 }}>
+              <span className="muted" style={{ fontSize: 12 }}>الاسم المتوقع: <span className="mono">SHOPSYS_KV</span></span>
+              <Btn size="sm" kind="ghost" onClick={() => void createServicesNs()} disabled={nsBusy || !hasCfToken}>
+                ➕ إنشاء المساحة
+              </Btn>
+            </div>
+          </div>
+        </div>
+
+        {nsList.length > 0 ? (
+          <>
+            <div className="section-title">المساحات المكتشفة في الحساب ({nsList.length})</div>
+            <div className="table-wrap">
+              <table className="table">
+                <thead><tr><th>الاسم</th><th>المعرّف</th><th>تعيين كـ</th></tr></thead>
+                <tbody>
+                  {nsList.map((n) => (
+                    <tr key={n.id}>
+                      <td>{n.title}</td>
+                      <td className="mono">{n.id}</td>
+                      <td>
+                        <div className="row">
+                          <Btn size="sm" kind={nsLicense.trim() === n.id ? 'primary' : 'default'} onClick={() => assign('license', n.id)}>تراخيص</Btn>
+                          <Btn size="sm" kind={nsServices.trim() === n.id ? 'primary' : 'default'} onClick={() => assign('services', n.id)}>خدمات</Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+
+        {createdNs ? (
+          <div className="notice notice-warn" style={{ marginBlockStart: 12, display: 'block' }}>
+            <b>الخطوة الأخيرة لتفعيل الدعم والأعلام:</b> اربط المساحة الجديدة بخدمة تَحَكَّم السحابية ثم أعد النشر
+            (هذا الملف في مشروع تَحَكَّم — لا تعدّل عليه من هنا):
+            <pre className="mono" style={{ marginBlockStart: 8, whiteSpace: 'pre-wrap' }}>{servicesBindingSnippet(createdNs)}</pre>
+            ثم اضغط «حفظ إعدادات Cloudflare» و«اختبار الاتصال».
+          </div>
+        ) : null}
+
+        <div className="row" style={{ justifyContent: 'flex-end', marginBlockStart: 12 }}>
           <Btn kind="primary" disabled={busy} onClick={() => void saveCloudflare()}>حفظ إعدادات Cloudflare</Btn>
         </div>
       </div>

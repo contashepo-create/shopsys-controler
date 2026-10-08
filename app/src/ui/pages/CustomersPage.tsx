@@ -243,7 +243,8 @@ export function IssueDialog(props: {
         extraModules: modules,
       })
       setIssued({ key: res.key, fingerprint: res.fingerprint })
-      toast('تم إصدار المفتاح ورفعه إلى Cloudflare ✓', 'ok')
+      if (res.notes?.length) toast(res.notes[0], 'info')
+      else toast('تم إصدار المفتاح ورفعه إلى Cloudflare ✓', 'ok')
       await props.onDone()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')

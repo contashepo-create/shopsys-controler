@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { bridge } from '../../data/bridge.ts'
 import { useDataStore } from '../../stores/data.store.ts'
 import { readSupportChat, replySupport } from '../../data/actions.ts'
@@ -7,7 +8,7 @@ import { Btn, EmptyState, Textarea, useToast, Badge } from '../components/ui.tsx
 
 export function SupportPage() {
   const toast = useToast()
-  const { customers, refresh } = useDataStore()
+  const { customers, refresh, servicesAvailable, servicesError } = useDataStore()
   const [selectedId, setSelectedId] = useState('')
   const [chat, setChat] = useState<ChatMessage[]>([])
   const [unread, setUnread] = useState<Record<string, boolean>>({})
@@ -65,6 +66,26 @@ export function SupportPage() {
       toast(e instanceof Error ? e.message : String(e), 'error')
     }
     setBusy(false)
+  }
+
+  if (!servicesAvailable) {
+    return (
+      <div className="card">
+        <div className="card-title">🎧 قناة الدعم — تحتاج ضبط مساحة الخدمات</div>
+        <p style={{ marginBlockStart: 0 }}>
+          محادثات الدعم تُحفظ في مساحة <span className="mono">SHOPSYS_KV</span> التي يقرأ منها تطبيق العميل
+          (المسار <span className="mono">/support/&lt;deviceId&gt;</span> على خدمة تَحَكَّم السحابية).
+          هذه المساحة <b>غير مضبوطة بعد</b>، لذلك لا يمكن قراءة التذاكر أو الرد عليها.
+        </p>
+        {servicesError ? <div className="notice notice-warn" style={{ display: 'block' }}>{servicesError}</div> : null}
+        <ol className="plain" style={{ fontSize: 13.5 }}>
+          <li>الإعدادات ← Cloudflare ← <b>اكتشف من الحساب</b>: لو المساحة موجودة سيملؤها تلقائياً.</li>
+          <li>لو لم توجد: اضغط <b>➕ إنشاء المساحة</b> في نفس الصفحة (اسمها <span className="mono">SHOPSYS_KV</span>).</li>
+          <li>أعطِ اللوحة معرّفها، ثم اربطها بخدمة تَحَكَّم السحابية وأعد النشر (التعليمات تظهر لحظة الإنشاء).</li>
+        </ol>
+        <div className="row"><Link className="btn btn-primary" to="/settings">فتح الإعدادات</Link></div>
+      </div>
+    )
   }
 
   return (

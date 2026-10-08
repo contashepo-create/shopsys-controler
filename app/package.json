@@ -1,7 +1,7 @@
 {
   "name": "shopsys-controler",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "مركز تحكم المطور — لوحة تحكم سطح مكتب لإدارة تراخيص واشتراكات تطبيق تَحَكَّم (Shopsys)",
   "author": "م / محمد عبدة",

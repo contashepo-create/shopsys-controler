@@ -70,7 +70,8 @@ function IssueTab() {
         extraModules: modules,
       })
       setIssued({ key: res.key, fingerprint: res.fingerprint })
-      toast('تم إصدار المفتاح ورفعه إلى Cloudflare ✓', 'ok')
+      if (res.notes?.length) toast(res.notes[0], 'info')
+      else toast('تم إصدار المفتاح ورفعه إلى Cloudflare ✓', 'ok')
       await refresh()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')

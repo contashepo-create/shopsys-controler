@@ -30,6 +30,8 @@ export interface IssueLicenseResult {
   key: string
   fingerprint: string
   payload: LicensePayload
+  /** ملاحظات غير حاجبة — مثل غياب مساحة الخدمات عند تحديث بطاقة الاشتراك */
+  notes?: string[]
 }
 
 export async function audit(action: AuditAction, target?: string, details?: Record<string, unknown>): Promise<void> {
@@ -57,6 +59,7 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   if (!sign.ok || !sign.key) throw new Error(sign.error ?? 'تعذر توقيع المفتاح — تحقق من المفتاح الخاص في الإعدادات')
   const key = sign.key
   const fingerprint = keyFingerprint(key)
+  const notes: string[] = []
 
   const licRecord = JSON.stringify({ payload, key, issuedAt: payload.issuedAt, revoked: false })
   const r1 = await bridge.cf.put('license', `lic:${fingerprint}`, licRecord)
@@ -78,15 +81,19 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   const entryText = `${opts.renew ? 'تجديد' : 'تفعيل'} ${payload.plan} حتى ${payload.expiresAt ?? 'مدى الحياة'} — ${payload.customer}`
   await bridge.cf.put('license', logKey, appendDeviceLogEntry(prevLog.ok ? prevLog.value : null, entryText))
 
-  // mirror the subscription card on the services namespace (the full worker's /subscription)
-  await bridge.cf.put('services', `sub:${input.deviceId}`, JSON.stringify({
+  // بطاقة الاشتراك في مساحة الخدمات (يقرأها worker التطبيق من /subscription)
+  // أفضل جهد: غياب مساحة الخدمات لا يجوز أن يُلغي مفتاحاً صدر فعلاً في مساحة التراخيص
+  const subMirror = await bridge.cf.put('services', `sub:${input.deviceId}`, JSON.stringify({
     plan: payload.plan, expiresAt: payload.expiresAt, message: '', customer: payload.customer, issuedAt: payload.issuedAt,
   }))
+  if (!subMirror.ok) {
+    notes.push(subMirror.code === 'ns_missing' ? 'لم تُحدَّث بطاقة الاشتراك السحابية: مساحة الخدمات غير مضبوطة' : `لم تُحدَّث بطاقة الاشتراك: ${subMirror.error ?? ''}`)
+  }
 
   await audit(opts.renew ? 'license_renew' : 'license_issue', input.deviceId, {
-    fingerprint, plan: payload.plan, expiresAt: payload.expiresAt, customer: payload.customer,
+    fingerprint, plan: payload.plan, expiresAt: payload.expiresAt, customer: payload.customer, notes,
   })
-  return { key, fingerprint, payload }
+  return { key, fingerprint, payload, notes }
 }
 
 /** Burn a license: add the fingerprint to the revocation list (both namespaces) + flag the record. */

@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, KeyRound, SlidersHorizontal, BellRing, Headset,
   Info, Bot, ScrollText, Settings, Lock, RefreshCw,
@@ -26,7 +26,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const { lock, profile } = useSessionStore()
   const { botUsername, hasBotToken } = useConfigStore()
-  const { loading, lastSyncAt, refresh, customers } = useDataStore()
+  const { loading, lastSyncAt, refresh, customers, servicesAvailable, servicesError } = useDataStore()
 
   return (
     <div className="app-shell">
@@ -74,6 +74,18 @@ export function AppShell() {
           </div>
         </header>
         <main className="content">
+          {!servicesAvailable ? (
+            <div className="notice notice-warn">
+              <span>
+                🔌 <b>مساحة الخدمات (SHOPSYS_KV) غير مضبوطة</b> — الدعم والأعلام السريعة ونشر التحديثات
+                وبطاقات الاشتراك لن تعمل حتى تضبطها. ميزات التراخيص والعملاء والإشعارات تعمل طبيعياً.
+              </span>
+              <Link className="btn btn-sm btn-primary" to="/settings">اضبطها الآن</Link>
+            </div>
+          ) : null}
+          {servicesAvailable && servicesError ? (
+            <div className="notice notice-warn">{servicesError}</div>
+          ) : null}
           <Outlet />
         </main>
       </div>

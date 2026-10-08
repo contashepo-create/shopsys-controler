@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { bridge } from '../../data/bridge.ts'
+import { useDataStore } from '../../stores/data.store.ts'
 import { updateAbout, updateVersion, updateGlobalSettings } from '../../data/actions.ts'
 import { PLAN_LABELS_AR, LICENSE_FEATURES, FEATURE_LABELS_AR, EXTRA_MODULES, MODULE_LABELS_AR, type LicensePlan } from '../../core/license.ts'
 import { Btn, Field, Textarea, useToast, Badge } from '../components/ui.tsx'
 
 export function ContentPage() {
   const toast = useToast()
+  const servicesAvailable = useDataStore((s) => s.servicesAvailable)
   const [aboutTitle, setAboutTitle] = useState('')
   const [aboutBody, setAboutBody] = useState('')
   const [aboutPhone, setAboutPhone] = useState('')
@@ -120,6 +123,12 @@ export function ContentPage() {
 
       <div className="card">
         <div className="card-title">⬆️ نشر تحديث التطبيق <Badge kind="muted">الحالي: {currentVersion ?? '—'}</Badge></div>
+        {!servicesAvailable ? (
+          <div className="notice notice-warn" style={{ display: 'block' }}>
+            نقطة <span className="mono">/version</span> تُقرأ من مساحة الخدمات <span className="mono">SHOPSYS_KV</span> وهي غير مضبوطة.
+            <div style={{ marginBlockStart: 8 }}><Link className="btn btn-sm" to="/settings">اضبطها من الإعدادات</Link></div>
+          </div>
+        ) : null}
         <Field label="النسخة الجديدة (x.y.z)" value={version} onChange={setVersion} dir="ltr" placeholder="1.0.20" />
         <Field label="رابط التنزيل" value={downloadUrl} onChange={setDownloadUrl} dir="ltr" />
         <Field label="SHA-256" value={sha256} onChange={setSha256} mono />
@@ -129,7 +138,7 @@ export function ContentPage() {
           <span>تحديث إجباري</span>
         </label>
         <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Btn kind="primary" disabled={busy} onClick={() => void saveVersion()}>نشر التحديث</Btn>
+          <Btn kind="primary" disabled={busy || !servicesAvailable} onClick={() => void saveVersion()}>نشر التحديث</Btn>
         </div>
       </div>
 

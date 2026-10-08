@@ -119,10 +119,18 @@ function cfError(status, body) {
 async function handleCfRequest(payload) {
   const { ns, op } = payload || {}
   const cfg = cfConfig()
-  if (!cfg.token) return { ok: false, error: 'لم يُضبط توكن Cloudflare بعد (الإعدادات)' }
-  if (!cfg.accountId) return { ok: false, error: 'لم يُضبط Account ID بعد (الإعدادات)' }
+  if (!cfg.token) return { ok: false, code: 'no_token', error: 'لم يُضبط توكن Cloudflare بعد (الإعدادات ← Cloudflare)' }
+  if (!cfg.accountId) return { ok: false, code: 'no_account', error: 'لم يُضبط Account ID بعد (الإعدادات ← Cloudflare)' }
   const nsId = nsIdFor(ns)
-  if (!nsId) return { ok: false, error: ns === 'services' ? 'namespace الخدمات غير مضبوط' : 'namespace الترخيص غير مضبوط' }
+  if (!nsId) {
+    return {
+      ok: false,
+      code: 'ns_missing',
+      error: ns === 'services'
+        ? 'مساحة الخدمات (SHOPSYS_KV) غير مضبوطة — افتح الإعدادات ← Cloudflare واضبطها'
+        : 'مساحة التراخيص (SHOPSYS_CONTROL) غير مضبوطة — افتح الإعدادات ← Cloudflare',
+    }
+  }
 
   const base = `${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces/${nsId}`
   const headers = cfHeaders()
@@ -175,6 +183,60 @@ async function handleCfRequest(payload) {
     return { ok: false, error: 'عملية غير معروفة' }
   } catch (e) {
     return { ok: false, error: `تعذر الاتصال بـ Cloudflare: ${e.message}` }
+  }
+}
+
+/** قائمة كل مساحات KV في الحساب — للاكتشاف والتوثيق الذاتي */
+async function handleCfNamespaces() {
+  const cfg = cfConfig()
+  if (!cfg.token) return { ok: false, code: 'no_token', error: 'اضبط توكن Cloudflare أولاً' }
+  if (!cfg.accountId) return { ok: false, code: 'no_account', error: 'اضبط Account ID أولاً' }
+  try {
+    const all = []
+    let page = 1
+    for (;;) {
+      const res = await fetch(`${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces?per_page=100&page=${page}`, { headers: cfHeaders() })
+      const text = await res.text()
+      if (!res.ok) return { ok: false, code: 'cf_error', error: cfError(res.status, text) }
+      const env = JSON.parse(text)
+      if (!env.success) return { ok: false, code: 'cf_error', error: env.errors?.[0]?.message ?? 'فشل سرد المساحات' }
+      const batch = env.result ?? []
+      all.push(...batch.map((n) => ({ id: n.id, title: n.title })))
+      const info = env.result_info ?? {}
+      if (!info.page || info.page >= info.total_pages || batch.length === 0) break
+      page += 1
+      if (page > 20) break
+    }
+    return { ok: true, namespaces: all, accountId: cfg.accountId }
+  } catch (e) {
+    return { ok: false, code: 'cf_error', error: `تعذر الاتصال بـ Cloudflare: ${e.message}` }
+  }
+}
+
+/** إنشاء مساحة KV جديدة (يتطلب توكن بصلاحية KV: Edit على مستوى الحساب) */
+async function handleCfNamespaceCreate(title) {
+  const cfg = cfConfig()
+  if (!cfg.token) return { ok: false, code: 'no_token', error: 'اضبط توكن Cloudflare أولاً' }
+  if (!cfg.accountId) return { ok: false, code: 'no_account', error: 'اضبط Account ID أولاً' }
+  const clean = String(title ?? '').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 60)
+  if (clean.length < 3) return { ok: false, code: 'cf_error', error: 'اسم المساحة قصير جداً' }
+  try {
+    const res = await fetch(`${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces`, {
+      method: 'POST',
+      headers: cfHeaders(),
+      body: JSON.stringify({ title: clean }),
+    })
+    const text = await res.text()
+    if (!res.ok) {
+      const env = JSON.parse(text || '{}')
+      const detail = env.errors?.[0]?.message ?? ''
+      return { ok: false, code: 'cf_error', error: detail ? `${detail} — يحتاج التوكن صلاحية Workers KV Storage: Edit` : cfError(res.status, text) }
+    }
+    const env = JSON.parse(text)
+    if (!env.success) return { ok: false, code: 'cf_error', error: env.errors?.[0]?.message ?? 'فشل الإنشاء' }
+    return { ok: true, id: env.result?.id, title: env.result?.title }
+  } catch (e) {
+    return { ok: false, code: 'cf_error', error: `تعذر الإنشاء: ${e.message}` }
   }
 }
 
@@ -385,6 +447,8 @@ const HANDLERS = {
   'secrets:set': (p) => handleSecretsSet(p),
   'cf:request': (p) => handleCfRequest(p),
   'cf:test': () => handleCfTest(),
+  'cf:namespaces': () => handleCfNamespaces(),
+  'cf:namespaceCreate': (title) => handleCfNamespaceCreate(title),
   'tg:send': (t) => handleTgSend(t),
   'tg:getMe': () => handleTgGetMe(),
   'license:sign': (j) => handleLicenseSign(j),

@@ -7,6 +7,9 @@ interface DataState {
   loading: boolean
   error: string | null
   lastSyncAt: string | null
+  /** مساحة الخدمات (الدعم/الأعلام/الاشتراكات/التحديثات) متاحة؟ */
+  servicesAvailable: boolean
+  servicesError: string | null
   refresh(): Promise<void>
 }
 
@@ -26,7 +29,11 @@ async function listAll(ns: 'license' | 'services', prefix: string): Promise<stri
   let cursor: string | undefined
   do {
     const page = await bridge.cf.listKeys(ns, prefix, cursor)
-    if (!page.ok) throw new Error(page.error ?? 'تعذر قراءة Cloudflare')
+    if (!page.ok) {
+      const err = new Error(page.error ?? 'تعذر قراءة Cloudflare') as Error & { code?: string }
+      err.code = page.code
+      throw err
+    }
     all.push(...page.keys)
     cursor = page.cursor ?? undefined
   } while (cursor && all.length < MAX_KEYS_PER_PREFIX)
@@ -38,25 +45,41 @@ export const useDataStore = create<DataState>((set, get) => ({
   loading: false,
   error: null,
   lastSyncAt: null,
+  servicesAvailable: true,
+  servicesError: null,
 
   refresh: async () => {
     if (get().loading) return
     set({ loading: true, error: null })
+
+    // بيانات التراخيص أساسية إلزامية؛ بيانات الخدمات (الدعم) اختيارية —
+    // غياب مساحة الخدمات لا يجوز أن يُسقط شاشات التراخيص والعملاء.
     try {
-      const [devKeys, licKeys, logKeys, emailKeys, chatKeys, revokedRaw] = await Promise.all([
+      const [devKeys, licKeys, logKeys, emailKeys, revokedRaw] = await Promise.all([
         listAll('license', 'dev:'),
         listAll('license', 'lic:'),
         listAll('license', 'log:'),
         listAll('license', 'email:'),
-        listAll('services', 'chat:'),
         bridge.cf.get('license', 'revoked'),
       ])
-      const [devEntries, licEntries, logEntries, emailEntries, chatEntries] = await Promise.all([
+      // مساحة الخدمات: تُقرأ منفصلة وبلا إسقاط للعملية كلها
+      let chatKeys: string[] = []
+      let chatEntries: (readonly [string, string | null])[] = []
+      let servicesAvailable = true
+      let servicesError: string | null = null
+      try {
+        chatKeys = await listAll('services', 'chat:')
+        chatEntries = await getAllValues('services', chatKeys)
+      } catch (e) {
+        servicesAvailable = false
+        servicesError = e instanceof Error ? e.message : String(e)
+      }
+
+      const [devEntries, licEntries, logEntries, emailEntries] = await Promise.all([
         getAllValues('license', devKeys),
         getAllValues('license', licKeys),
         getAllValues('license', logKeys),
         getAllValues('license', emailKeys),
-        getAllValues('services', chatKeys),
       ])
       let revoked: string[] = []
       try { revoked = revokedRaw.ok && revokedRaw.value ? JSON.parse(revokedRaw.value) as string[] : [] } catch { revoked = [] }
@@ -75,12 +98,19 @@ export const useDataStore = create<DataState>((set, get) => ({
         todayIso: new Date().toISOString().slice(0, 10),
       })
       const at = new Date().toISOString()
-      set({ customers, loading: false, lastSyncAt: at })
+      set({ customers, loading: false, lastSyncAt: at, servicesAvailable, servicesError })
       try {
         await bridge.db.cachePut('customers:snapshot', JSON.stringify({ at, customers }))
       } catch { /* cache is best-effort */ }
     } catch (e) {
-      set({ loading: false, error: e instanceof Error ? e.message : String(e) })
+      const code = (e as Error & { code?: string })?.code
+      const message = e instanceof Error ? e.message : String(e)
+      // مساحة الخدمات وحدها لا تُعطّل اللوحة — يُعرض تنبيه لطيف أعلى الشاشة
+      if (code === 'ns_missing' && message.includes('الخدمات')) {
+        set({ loading: false, servicesAvailable: false, servicesError: message, customers: get().customers, lastSyncAt: new Date().toISOString() })
+        return
+      }
+      set({ loading: false, error: message })
     }
   },
 }))

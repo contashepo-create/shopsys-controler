@@ -15,6 +15,8 @@ const CHANNELS = [
   'secrets:set',
   'cf:request',
   'cf:test',
+  'cf:namespaces',
+  'cf:namespaceCreate',
   'tg:send',
   'tg:getMe',
   'license:sign',

@@ -18,12 +18,16 @@ export interface KvListResult {
   cursor: string | null
 }
 
+export type KvErrorCode = 'ns_missing' | 'no_token' | 'no_account' | 'auth' | 'cf_error'
+
 export class KvError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  code: KvErrorCode
+  constructor(message: string, status: number, code: KvErrorCode = 'cf_error') {
     super(message)
     this.name = 'KvError'
     this.status = status
+    this.code = code
   }
 }
 
@@ -38,7 +42,15 @@ const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 
 function namespaceUrl(cfg: KvNamespaceConfig, ns: KvNamespace, key?: string): string {
   const nsId = cfg.namespaces[ns]
-  if (!nsId) throw new KvError(ns === 'license' ? 'namespace الترخيص غير مضبوط' : 'namespace الخدمات غير مضبوط', 0)
+  if (!nsId) {
+    throw new KvError(
+      ns === 'license'
+        ? 'مساحة التراخيص (SHOPSYS_CONTROL) غير مضبوطة — الإعدادات ← Cloudflare'
+        : 'مساحة الخدمات (SHOPSYS_KV) غير مضبوطة — الإعدادات ← Cloudflare',
+      0,
+      'ns_missing',
+    )
+  }
   const base = `${CF_API_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces/${nsId}`
   return key == null ? base : `${base}/values/${encodeURIComponent(key)}`
 }
