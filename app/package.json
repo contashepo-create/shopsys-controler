@@ -16,9 +16,9 @@
     "verify:license": "node --experimental-strip-types scripts/verify_license_core.mjs",
     "verify:secrets": "node scripts/verify_no_secrets.mjs",
     "preview": "vite preview",
-    "desktop:compile": "node -e \"console.log(chr(39)+'main.cjs جاهز — لا حاجة لبناء'+chr(39))\"",
     "desktop:dev": "node desktop/dev.mjs",
-    "desktop:dist": "vite build && node desktop/build.mjs && electron-builder --win nsis --publish never"
+    "desktop:dist": "vite build && electron-builder --win nsis --x64 --publish never",
+    "desktop:pack": "vite build && electron-builder --win --x64 --dir --publish never"
   },
   "dependencies": {
     "lucide-react": "^1.45.0",

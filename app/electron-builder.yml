@@ -15,7 +15,8 @@ files:
   - package.json
 # لا وحدات أصلية — كل التخزين JSON + WebCrypto (بناء المثبّت من أي نظام)
 win:
-  icon: desktop/build/icon.png
+  # أيقونة صريحة .ico (نفس درس نسخة تَحَكَّم: استنتاج الأيقونة قد يسقط صامتاً لأيقونة Electron)
+  icon: desktop/build/icon.ico
   target:
     - target: nsis
       arch:

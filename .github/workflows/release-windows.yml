@@ -45,8 +45,13 @@ jobs:
       - name: اختبارات الوحدة
         run: npm test
 
-      - name: بناء الواجهة ومثبّت NSIS
-        run: npm run desktop:dist
+      # خطوتان منفصلتان: أي فشل يظهر باسمه مباشرة (بناء الواجهة ≠ بناء المثبّت)
+      - name: بناء الواجهة (Vite)
+        run: npx vite build
+
+      - name: بناء مثبّت NSIS
+        run: npx electron-builder --win nsis --x64 --publish never
+        working-directory: app
 
       - name: حزمة محمولة (بلا تثبيت)
         shell: pwsh
