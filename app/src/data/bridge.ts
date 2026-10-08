@@ -104,6 +104,23 @@ export interface AuditRow extends AuditEntry {
   id: number
 }
 
+/* ─── التحديث التلقائي ─── */
+
+export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'latest' | 'error' | 'unsupported'
+
+export interface UpdateState {
+  status: UpdateStatus
+  version: string | null
+  percent: number
+  error: string | null
+  currentVersion: string
+}
+
+export interface UpdateAction {
+  ok: boolean
+  error?: string
+}
+
 export interface ControlerBridge {
   runtime: 'electron' | 'web'
   app: { version(): Promise<string> }
@@ -122,6 +139,14 @@ export interface ControlerBridge {
   }
   tg: { send(text: string): Promise<TgSendResult>; getMe(): Promise<TgMeResult> }
   license: { sign(payloadJson: string): Promise<LicenseSignResult>; checkKey(): Promise<LicenseCheckResult> }
+  updates: {
+    state(): Promise<UpdateState>
+    check(): Promise<UpdateAction>
+    download(): Promise<UpdateAction>
+    install(): Promise<UpdateAction>
+    /** يشترك في بثّ الحالة الحيّ — يعيد دالة إلغاء الاشتراك */
+    onState(cb: (s: UpdateState) => void): () => void
+  }
   db: {
     auditAppend(e: AuditEntry): Promise<void>
     auditList(limit: number): Promise<AuditRow[]>
@@ -186,6 +211,13 @@ function webBridge(): ControlerBridge {
         createNamespace: async () => notDesktop(),
     },
     tg: { send: async () => notDesktop(), getMe: async () => notDesktop() },
+    updates: {
+      state: async () => ({ status: 'unsupported', version: null, percent: 0, error: 'التحديث التلقائي في نسخة سطح المكتب فقط', currentVersion: '0.0.0' }),
+      check: async () => notDesktop(),
+      download: async () => notDesktop(),
+      install: async () => notDesktop(),
+      onState: () => () => {},
+    },
     license: { sign: async () => notDesktop(), checkKey: async () => notDesktop() },
     db: {
       auditAppend: async (e) => {
@@ -222,6 +254,16 @@ function desktopBridge(): ControlerBridge | null {
       createNamespace: (title) => invoke('cf:namespaceCreate', title),
     },
     tg: { send: (text) => invoke('tg:send', text), getMe: () => invoke('tg:getMe') },
+    updates: {
+      state: () => invoke('update:state'),
+      check: () => invoke('update:check'),
+      download: () => invoke('update:download'),
+      install: () => invoke('update:install'),
+      onState: (cb) => {
+        const subscribe = (window.controlerDesktop as unknown as { onUpdateState?: (fn: (s: UpdateState) => void) => () => void })?.onUpdateState
+        return typeof subscribe === 'function' ? subscribe(cb) : () => {}
+      },
+    },
     license: { sign: (payloadJson) => invoke('license:sign', payloadJson), checkKey: () => invoke('license:checkKey') },
     db: {
       auditAppend: (e) => invoke('db:auditAppend', e),

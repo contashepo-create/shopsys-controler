@@ -10,6 +10,7 @@ import {
 } from '../../core/settings.ts'
 import { audit } from '../../data/actions.ts'
 import { Btn, Field, useToast, Badge, ConfirmDialog } from '../components/ui.tsx'
+import { useUpdatesStore } from '../../stores/updates.store.ts'
 import { DEV_PUBLIC_KEY_LABEL } from '../../core/licenseInfo.ts'
 
 export function SettingsPage() {
@@ -38,6 +39,7 @@ export function SettingsPage() {
   const [busy, setBusy] = useState(false)
   const [cfTesting, setCfTesting] = useState(false)
   const [confirmForget, setConfirmForget] = useState(false)
+  const { state: updateState, init: initUpdates, check: checkUpdates, download: downloadUpdate, install: installUpdate } = useUpdatesStore()
   const [nsList, setNsList] = useState<CfNamespaceInfo[]>([])
   const [nsBusy, setNsBusy] = useState(false)
   const [nsError, setNsError] = useState<string | null>(null)
@@ -45,6 +47,7 @@ export function SettingsPage() {
 
   useEffect(() => { setAccountId(cfAccountId); setNsLicense(cfNsLicense || LICENSE_NS_DEFAULT); setNsServices(cfNsServices); setChatId(adminChatId) }, [cfAccountId, cfNsLicense, cfNsServices, adminChatId])
   useEffect(() => { void bridge.license.checkKey().then(setKeyStatus) }, [hasPrivateKey])
+  useEffect(() => { initUpdates() }, [initUpdates])
 
   /** يجلب المساحات من Cloudflare ويرشّح دور كل واحدة تلقائياً ثم يملأ الحقول */
   async function discover() {
@@ -327,6 +330,36 @@ export function SettingsPage() {
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <Btn kind="danger" onClick={() => setConfirmForget(true)} disabled={!keyStatus?.present}>حذف المفتاح من الجهاز</Btn>
           <Btn kind="primary" disabled={busy || !privateKey.trim()} onClick={() => void importKey()}>استيراد المفتاح</Btn>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">
+          🔄 التحديثات
+          <Badge kind={updateState?.status === 'available' || updateState?.status === 'ready' ? 'warn' : 'muted'}>
+            {updateState?.status === 'available' ? `متاح ${updateState.version}`
+              : updateState?.status === 'ready' ? `جاهز ${updateState.version}`
+              : updateState?.status === 'downloading' ? `جارٍ التنزيل ${updateState.percent}%`
+              : updateState?.status === 'latest' ? 'أحدث إصدار'
+              : updateState?.status === 'unsupported' ? 'في النسخة المثبّتة فقط'
+              : 'لا فحص بعد'}
+          </Badge>
+        </div>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
+          النسخة الحالية: <b className="mono">{updateState?.currentVersion ?? __APP_VERSION__}</b> — يفحص التطبيق
+          مستودع GitHub تلقائياً بعد الإقلاع ثم كل 6 ساعات، والتنزيل لا يبدأ إلا بموافقتك.
+        </div>
+        {updateState?.error && updateState.status !== 'unsupported' ? (
+          <div className="notice notice-danger" style={{ display: 'block' }}>{updateState.error}</div>
+        ) : null}
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <Btn onClick={() => void checkUpdates().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر الفحص', 'error') })}>فحص الآن</Btn>
+          {updateState?.status === 'available' ? (
+            <Btn kind="primary" onClick={() => void downloadUpdate().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر التنزيل', 'error') })}>تنزيل التحديث</Btn>
+          ) : null}
+          {updateState?.status === 'ready' ? (
+            <Btn kind="primary" onClick={() => void installUpdate()}>إعادة التشغيل والتثبيت</Btn>
+          ) : null}
         </div>
       </div>
 

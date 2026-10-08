@@ -1,7 +1,7 @@
 {
   "name": "shopsys-controler",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "مركز تحكم المطور — لوحة تحكم سطح مكتب لإدارة تراخيص واشتراكات تطبيق تَحَكَّم (Shopsys)",
   "author": "م / محمد عبدة",
@@ -21,6 +21,7 @@
     "desktop:pack": "vite build && electron-builder --win --x64 --dir --publish never"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.45.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

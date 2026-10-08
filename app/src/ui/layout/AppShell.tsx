@@ -8,6 +8,7 @@ import { useConfigStore } from '../../stores/config.store.ts'
 import { useDataStore } from '../../stores/data.store.ts'
 import { APP_NAME } from '../../core/settings.ts'
 import { Badge, Spinner } from '../components/ui.tsx'
+import { UpdateBanner } from '../components/UpdateBanner.tsx'
 
 const NAV = [
   { to: '/dashboard', label: 'لوحة التحكم', icon: LayoutDashboard },
@@ -74,6 +75,7 @@ export function AppShell() {
           </div>
         </header>
         <main className="content">
+          <UpdateBanner />
           {!servicesAvailable ? (
             <div className="notice notice-warn">
               <span>

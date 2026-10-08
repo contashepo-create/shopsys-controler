@@ -424,10 +424,95 @@ function handleAuthVerify(hash) {
   return { ok: eq(stored.hash, hash?.hash) && eq(stored.salt, hash?.salt) }
 }
 
+/* ───────────────────────── التحديث التلقائي (GitHub Releases) ───────────────────────── */
+
+/**
+ * يعمل في النسخة المثبّتة فقط (تحتاج resources/app-update.yml المولَّد من electron-builder).
+ * المستودع عام ⇒ لا توكن مطلوب للقراءة. التنزيل يدويّ بإرادة المالك (autoDownload=false)
+ * حتى لا تُسحب 110 ميجابايت في الخلفية بلا إذن.
+ */
+let mainWindow = null
+let autoUpdaterRef = null
+
+let updateState = {
+  status: 'idle',          // idle | checking | available | downloading | ready | latest | error | unsupported
+  version: null,
+  percent: 0,
+  error: null,
+  currentVersion: app.getVersion(),
+}
+
+function pushUpdateState(patch) {
+  updateState = { ...updateState, ...patch }
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:state', updateState)
+  } catch { /* النافذة أُغلقت */ }
+}
+
+function setupAutoUpdater() {
+  if (!app.isPackaged) {
+    updateState.status = 'unsupported'
+    updateState.error = 'فحص التحديثات يعمل في النسخة المثبّتة فقط'
+    return
+  }
+  try {
+    const { autoUpdater } = require('electron-updater')
+    autoUpdaterRef = autoUpdater
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = true
+    autoUpdater.logger = null
+
+    autoUpdater.on('checking-for-update', () => pushUpdateState({ status: 'checking', error: null }))
+    autoUpdater.on('update-available', (info) => pushUpdateState({ status: 'available', version: info?.version ?? null, error: null }))
+    autoUpdater.on('update-not-available', (info) => pushUpdateState({ status: 'latest', version: info?.version ?? app.getVersion(), percent: 0, error: null }))
+    autoUpdater.on('download-progress', (p) => pushUpdateState({ status: 'downloading', percent: Math.round(Number(p?.percent ?? 0)) }))
+    autoUpdater.on('update-downloaded', (info) => pushUpdateState({ status: 'ready', version: info?.version ?? null, percent: 100, error: null }))
+    autoUpdater.on('error', (err) => pushUpdateState({ status: 'error', error: String(err?.message || err).slice(0, 300) }))
+
+    // فحص صامت بعد الإقلاع بـ 12 ثانية (لا يزعج أول تشغيل)، ثم كل 6 ساعات
+    setTimeout(() => { void autoUpdater.checkForUpdates().catch(() => {}) }, 12_000)
+    setInterval(() => { void autoUpdater.checkForUpdates().catch(() => {}) }, 6 * 60 * 60 * 1000)
+  } catch (e) {
+    console.warn('[controler] electron-updater غير متاح:', e.message)
+    updateState.status = 'unsupported'
+    updateState.error = 'وحدة التحديث غير متاحة في هذه النسخة'
+  }
+}
+
 /* ───────────────────────── IPC wiring ───────────────────────── */
 
 const HANDLERS = {
   'app:version': () => app.getVersion(),
+  'update:state': () => updateState,
+  'update:check': async () => {
+    if (!app.isPackaged) return { ok: false, error: 'فحص التحديثات يعمل في النسخة المثبّتة فقط' }
+    if (!autoUpdaterRef) return { ok: false, error: 'وحدة التحديث غير متاحة' }
+    try {
+      pushUpdateState({ status: 'checking', error: null })
+      await autoUpdaterRef.checkForUpdates()
+      return { ok: true }
+    } catch (e) {
+      pushUpdateState({ status: 'error', error: e.message })
+      return { ok: false, error: e.message }
+    }
+  },
+  'update:download': async () => {
+    if (!autoUpdaterRef) return { ok: false, error: 'وحدة التحديث غير متاحة' }
+    try {
+      pushUpdateState({ status: 'downloading', percent: 0, error: null })
+      await autoUpdaterRef.downloadUpdate()
+      return { ok: true }
+    } catch (e) {
+      pushUpdateState({ status: 'error', error: e.message })
+      return { ok: false, error: e.message }
+    }
+  },
+  'update:install': () => {
+    if (!autoUpdaterRef) return { ok: false, error: 'وحدة التحديث غير متاحة' }
+    // isSilent=false (يُظهر شاشة التثبيت)، isForceRunAfter=true (يعيد تشغيل اللوحة بعدها)
+    setImmediate(() => autoUpdaterRef.quitAndInstall(false, true))
+    return { ok: true }
+  },
   'setup:isComplete': () => ({
     hasProfile: Boolean(readJson('profile.json', null)?.name),
     hasPassword: Boolean(readJson('auth.json', null)?.hash),
@@ -535,11 +620,14 @@ function createWindow() {
   } else {
     void win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
   }
+  mainWindow = win
+  win.on('closed', () => { if (mainWindow === win) mainWindow = null })
   return win
 }
 
 app.whenReady().then(() => {
   registerIpc()
+  setupAutoUpdater()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

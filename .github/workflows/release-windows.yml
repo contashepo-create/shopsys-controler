@@ -60,6 +60,31 @@ jobs:
           Compress-Archive -Path "release/win-unpacked/*" -DestinationPath "release/shopsys-controler-portable-$version.zip" -Force
           Get-ChildItem release | Select-Object Name, Length
 
+      - name: التحقق من سلامة الحزمة وملفات التحديث التلقائي
+        shell: pwsh
+        run: |
+          $asar = "release/win-unpacked/resources/app.asar"
+          if (!(Test-Path $asar)) { throw "app.asar مفقود — المثبّت لن يعمل" }
+
+          Write-Host "=== محتويات الحزمة (نقاط حرجة) ==="
+          $listing = (npx --yes @electron/asar list $asar) -join "`n"
+          $norm = $listing -replace '\\', '/'
+          $required = @('/desktop/main.cjs', '/desktop/preload.cjs', '/dist/index.html', '/package.json', '/node_modules/electron-updater/')
+          foreach ($needle in $required) {
+            if ($norm -notmatch [regex]::Escape($needle)) { throw "المطلوب مفقود داخل الحزمة: $needle — المثبّت سيكون معطوباً" }
+            Write-Host "  موجود: $needle"
+          }
+
+          Write-Host "=== app-update.yml (يقرأه electron-updater) ==="
+          $update = "release/win-unpacked/resources/app-update.yml"
+          if (!(Test-Path $update)) { throw "app-update.yml مفقود — التحديث التلقائي لن يعمل" }
+          Get-Content $update
+
+          Write-Host "=== latest.yml (فهرس الإصدار للتحديث) ==="
+          $latest = Get-ChildItem release -Filter latest.yml -ErrorAction SilentlyContinue
+          if (!$latest) { throw "latest.yml مفقود — التحديث التلقائي لن يعمل" }
+          Get-Content $latest.FullName
+
       - name: عرض بصمات الملفات (SHA-256)
         shell: pwsh
         run: |
@@ -101,7 +126,7 @@ jobs:
           fi
 
           shopt -s nullglob
-          FILES=(release/*.exe release/*.zip)
+          FILES=(release/*.exe release/*.zip release/*.yml release/*.blockmap)
           if [ ${#FILES[@]} -eq 0 ]; then echo "✖ لا ملفات للرفع"; exit 1; fi
           gh release upload "$TAG" "${FILES[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           echo "✅ تم رفع ${#FILES[@]} ملفاً إلى $TAG"
