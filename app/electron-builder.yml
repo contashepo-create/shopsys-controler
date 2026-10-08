@@ -1,0 +1,34 @@
+# حزمة «مركز تحكم المطور» — نسخة سطح المكتب (ويندوز NSIS)
+# التشغيل: npm run desktop:dist  (من مجلد app/)
+appId: com.contashepo.shopsys-controler
+productName: Shopsys Controler
+copyright: تطوير وملكية حصرية — جميع الحقوق محفوظة م / محمد عبدة
+directories:
+  output: release
+  buildResources: desktop/build
+files:
+  - dist/**/*
+  - dist-desktop/**/*
+  - package.json
+# الوحدة الأصلية تُفك من asar (إلاكترون يحمّلها من node_modules وقت التشغيل)
+asarUnpack:
+  - node_modules/better-sqlite3/**
+win:
+  icon: desktop/build/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  license: desktop/build/license.txt
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  shortcutName: تحكم المطور
+  artifactName: shopsys-controler-setup-${version}.${ext}
+# التحديث التلقائي — Phase 6 (ريبو releases خاص) — البناء يستخدم --publish never
+publish:
+  provider: github
+  owner: contashepo-create
+  repo: shopsys-controler-releases
+  releaseType: release

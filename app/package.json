@@ -1,0 +1,46 @@
+{
+  "name": "shopsys-controler",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "مركز تحكم المطور — لوحة تحكم سطح مكتب لإدارة تراخيص واشتراكات تطبيق تَحَكَّم (Shopsys)",
+  "author": "م / محمد عبدة",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -b --force",
+    "build": "npm run typecheck && vite build",
+    "lint": "oxlint",
+    "test": "vitest run",
+    "verify:all": "node --experimental-strip-types scripts/run_verify_all.mjs",
+    "verify:license": "node --experimental-strip-types scripts/verify_license_core.mjs",
+    "verify:secrets": "node scripts/verify_no_secrets.mjs",
+    "preview": "vite preview",
+    "desktop:compile": "node -e \"console.log(chr(39)+'main.cjs جاهز — لا حاجة لبناء'+chr(39))\"",
+    "desktop:dev": "node desktop/dev.mjs",
+    "desktop:dist": "vite build && node desktop/build.mjs && electron-builder --win nsis --publish never"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "lucide-react": "^1.45.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.3",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "oxlint": "^1.81.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}
