@@ -25,6 +25,13 @@
 - ❌ لا وصول لأي بيانات محاسبية/تجارية للعملاء
 
 ### الإصدار والتنزيل
+**الإصدار الحالي:** [`v0.1.0`](https://github.com/contashepo-create/shopsys-controler/releases/tag/v0.1.0)
+
+| الملف | الحجم | الوصف |
+|---|---|---|
+| `shopsys-controler-setup-0.1.0.exe` | ~109 MB | المثبّت (NSIS) — اختصار «تحكم المطور» |
+| `shopsys-controler-portable-0.1.0.zip` | ~160 MB | نسخة محمولة بلا تثبيت |
+
 المثبّت يُبنى تلقائياً على GitHub Actions (ويندوز) عند دفع وسم إصدار:
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
