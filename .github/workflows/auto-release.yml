@@ -1,0 +1,112 @@
+# أي كود يصل الفرع الرئيسي main (دفع مباشر أو دمج PR) يُنتج إصداراً جديداً تلقائياً:
+#   يحسب النسخة التالية (patch+1) من آخر وسم v* → يرفعها في app/package.json →
+#   يدفع التزام إصدار آلياً → يوسمه vX.Y.Z — والوسم يشغّل سير «إصدار ويندوز»
+#   الذي يفحص ويبني وينشر إلى رف الإصدارات العام shopsys-controler-updater.
+# تغييرات الوثائق وحدها (docs/** و *.md) لا تولّد إصداراً — كود فقط.
+# (نفس منظومة الإصدار الآلي المستخدمة في تَحَكَّم/شوبسيس — طلب المالك.)
+
+name: إصدار آلي (ترقيم تلقائي)
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.gitignore'
+
+permissions:
+  contents: write
+  actions: write # لاستدعاء سير البناء صراحةً على الوسم (وسم البوت لا يشغّل سيراً)
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag-release:
+    name: ترقيم الإصدار ووسمه
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: جلب المستودع
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: هل هذا التزام إصدار آلي؟ (حارس منع الدوران)
+        id: guard
+        shell: bash
+        run: |
+          if git log -1 --pretty=%s | grep -q '^chore(release):'; then
+            echo "التزام إصدار آلي (رفع رقم النسخة) — لا يولّد إصداراً جديداً"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: حساب النسخة التالية
+        if: steps.guard.outputs.skip != 'true'
+        id: version
+        shell: bash
+        run: |
+          # آخر وسم يُقرأ من الخادم مباشرة (ls-remote) لا من أوسمة محلية ناقصة
+          LATEST=$(git ls-remote --tags origin 'refs/tags/v*' \
+            | awk -F/ '{print $NF}' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1 | sed 's/^v//')
+          echo "تشخيص: آخر وسم إصدار على الخادم = v${LATEST:-<لا شيء>}"
+          if [ -z "${LATEST}" ]; then echo "✗ لا وسم إصدار سابق — لا أساس للترقيم"; exit 1; fi
+          IFS='.' read -r MA MI PA <<< "${LATEST}"
+          NEW="v${MA}.${MI}.$((PA + 1))"
+          echo "النسخة الحالية ${LATEST} ← الجديدة ${NEW}"
+          cd app
+          node -e "
+            const fs = require('fs')
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+            pkg.version = '${NEW#v}'
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')
+          "
+          grep -q "\"version\": \"${NEW#v}\"" package.json || { echo "✗ فشل رفع الإصدار"; exit 1; }
+          echo "new=${NEW}" >> "$GITHUB_OUTPUT"
+
+      - name: التزام الإصدار والوسم ودفعها
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          BASE=$(git rev-parse --short HEAD)
+          git config user.name "shopsys-controler-release-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/package.json
+          git commit -m "chore(release): ${NEW} — إصدار آلي بعد تحديث ${BASE}"
+          if ! git push origin HEAD:main; then
+            echo "✗ فشل دفع التزام الإصدار — هل main محمي؟ (اسمح للبوت بالدفع أو أزل الحماية)"
+            exit 1
+          fi
+          git tag -a "${NEW}" -m "مركز تحكم المطور ${NEW#v} — إصدار آلي من تحديث ${BASE}"
+          git push origin "${NEW}"
+          echo "✓ وُسم ${NEW} في المستودع (علامة تاريخية)"
+
+      - name: تشغيل سير البناء على الوسم (استدعاء صريح)
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          # لماذا استدعاء صريح؟ لأن الأحداث التي ينتجها GITHUB_TOKEN — ومنها دفع الوسم
+          # أعلاه — لا تُشغّل سيراً جديداً بحسب قواعد GitHub (منعاً للدوران)، و
+          # workflow_dispatch هو الاستثناء المسموح به صراحةً.
+          gh workflow run release-windows.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${NEW}"
+          echo "✓ استُدعي سير «إصدار ويندوز» على ${NEW} — سيبني وينشر إلى رف الإصدارات العام"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## إصدار آلي ${NEW}"
+              echo ""
+              echo "- التزام الإصدار مدفوع لـ main ووسمه ${NEW}."
+              echo "- سير **إصدار ويندوز** استُدعي على الوسم ليبني وينشر إلى \`shopsys-controler-updater\`."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi

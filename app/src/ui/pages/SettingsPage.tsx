@@ -1,0 +1,447 @@
+import { useEffect, useState } from 'react'
+import { bridge, isDesktop, type DataInfo } from '../../data/bridge.ts'
+import { useConfigStore } from '../../stores/config.store.ts'
+import { useSessionStore } from '../../stores/session.store.ts'
+import { maskToken, isValidBotToken, isValidChatId } from '../../core/telegramAdmin.ts'
+import {
+  isValidCfAccountId, isValidCfNamespaceId, validateProfile, DEFAULT_BINDING, LICENSE_NS_DEFAULT,
+  suggestNamespaceRoles, servicesBindingSnippet, ROLE_LABELS_AR, ROLE_PURPOSE_AR,
+  type CfNamespaceInfo, type NamespaceRole,
+} from '../../core/settings.ts'
+import { audit } from '../../data/actions.ts'
+import { Btn, Field, useToast, Badge, ConfirmDialog } from '../components/ui.tsx'
+import { useUpdatesStore } from '../../stores/updates.store.ts'
+import { DEV_PUBLIC_KEY_LABEL } from '../../core/licenseInfo.ts'
+
+export function SettingsPage() {
+  const toast = useToast()
+  const { profile, setProfile, theme, setTheme } = useSessionStore()
+  const {
+    cfAccountId, cfNsLicense, cfNsServices, hasCfToken, hasPrivateKey, publicKeyMatches,
+    adminChatId, hasBotToken, botUsername, saveSecrets, refreshBot,
+    discoverNamespaces, createNamespace: createNs, checkKv,
+  } = useConfigStore()
+
+  const [name, setName] = useState(profile?.name ?? '')
+  const [phone, setPhone] = useState(profile?.phone ?? '')
+  const [email, setEmail] = useState(profile?.email ?? '')
+
+  const [accountId, setAccountId] = useState(cfAccountId)
+  const [nsLicense, setNsLicense] = useState(cfNsLicense || LICENSE_NS_DEFAULT)
+  const [nsServices, setNsServices] = useState(cfNsServices)
+  const [cfToken, setCfToken] = useState('')
+
+  const [token, setToken] = useState('')
+  const [chatId, setChatId] = useState(adminChatId)
+
+  const [privateKey, setPrivateKey] = useState('')
+  const [keyStatus, setKeyStatus] = useState<{ present: boolean; matchesPublic: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [cfTesting, setCfTesting] = useState(false)
+  const [confirmForget, setConfirmForget] = useState(false)
+  const { state: updateState, init: initUpdates, check: checkUpdates, download: downloadUpdate, install: installUpdate } = useUpdatesStore()
+  const [dataInfo, setDataInfo] = useState<DataInfo | null>(null)
+
+  // بيانات المالك المحفوظة على الجهاز (لا تُمسّ عند التحديث) + اللقطات الاحتياطية
+  useEffect(() => {
+    if (!isDesktop) return
+    void bridge.app.dataInfo().then(setDataInfo).catch(() => setDataInfo(null))
+  }, [])
+  const [nsList, setNsList] = useState<CfNamespaceInfo[]>([])
+  const [nsBusy, setNsBusy] = useState(false)
+  const [nsError, setNsError] = useState<string | null>(null)
+  const [createdNs, setCreatedNs] = useState<string | null>(null)
+
+  useEffect(() => { setAccountId(cfAccountId); setNsLicense(cfNsLicense || LICENSE_NS_DEFAULT); setNsServices(cfNsServices); setChatId(adminChatId) }, [cfAccountId, cfNsLicense, cfNsServices, adminChatId])
+  useEffect(() => { void bridge.license.checkKey().then(setKeyStatus) }, [hasPrivateKey])
+  useEffect(() => { initUpdates() }, [initUpdates])
+
+  /** يجلب المساحات من Cloudflare ويرشّح دور كل واحدة تلقائياً ثم يملأ الحقول */
+  async function discover() {
+    setNsBusy(true)
+    setNsError(null)
+    try {
+      const list = await discoverNamespaces()
+      setNsList(list)
+      if (list.length === 0) {
+        setNsError('لا توجد أي مساحة KV في هذا الحساب — أنشئ مساحة الخدمات بالزر أدناه')
+        setNsBusy(false)
+        return
+      }
+      const suggestions = suggestNamespaceRoles(list, { license: nsLicense.trim(), services: nsServices.trim() })
+      for (const sug of suggestions) {
+        if (!sug.namespaceId) continue
+        if (sug.role === 'license' && !nsLicense.trim()) setNsLicense(sug.namespaceId)
+        if (sug.role === 'services' && !nsServices.trim()) setNsServices(sug.namespaceId)
+      }
+      const remaining = suggestions.filter((x) => !x.namespaceId).map((x) => ROLE_LABELS_AR[x.role])
+      toast(
+        remaining.length
+          ? `وُجدت ${list.length} مساحة — تحتاج تحديد: ${remaining.join('، ')}`
+          : `✅ تعرّفت على المساحتين من الحساب (${list.length} مساحة متاحة)`,
+        remaining.length ? 'info' : 'ok',
+      )
+    } catch (e) {
+      setNsError(e instanceof Error ? e.message : String(e))
+    }
+    setNsBusy(false)
+  }
+
+  /** إنشاء مساحة الخدمات SHOPSYS_KV مباشرة من اللوحة */
+  async function createServicesNs() {
+    setNsBusy(true)
+    setNsError(null)
+    try {
+      const res = await createNs('SHOPSYS_KV')
+      if (!res.ok || !res.id) {
+        setNsError(res.error ?? 'تعذر إنشاء المساحة')
+        setNsBusy(false)
+        return
+      }
+      setNsServices(res.id)
+      setNsList(await discoverNamespaces())
+      setCreatedNs(res.id)
+      toast('✅ أُنشئت مساحة الخدمات SHOPSYS_KV — اسمح الربط أدناه', 'ok')
+    } catch (e) {
+      setNsError(e instanceof Error ? e.message : String(e))
+    }
+    setNsBusy(false)
+  }
+
+  function assign(role: NamespaceRole, id: string) {
+    if (role === 'license') setNsLicense(id)
+    else setNsServices(id)
+  }
+
+  async function saveProfile() {
+    const err = validateProfile({ name, phone, email })
+    if (err) { toast(err, 'error'); return }
+    setBusy(true)
+    try {
+      await bridge.profile.save({ name: name.trim(), phone: phone.trim(), email: email.trim() })
+      setProfile({ name: name.trim(), phone: phone.trim(), email: email.trim() })
+      await audit('profile_update', undefined, {})
+      toast('تم تحديث بيانات الحساب ✓', 'ok')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  async function saveCloudflare() {
+    if (accountId && !isValidCfAccountId(accountId)) { toast('Account ID يجب أن يكون 32 حرفاً hex', 'error'); return }
+    if (nsLicense && !isValidCfNamespaceId(nsLicense)) { toast('namespace الترخيص يجب أن يكون 32 حرفاً hex', 'error'); return }
+    if (nsServices && !isValidCfNamespaceId(nsServices)) { toast('namespace الخدمات يجب أن يكون 32 حرفاً hex', 'error'); return }
+    setBusy(true)
+    try {
+      await saveSecrets({
+        ...(cfToken ? { cfApiToken: cfToken } : {}),
+        cfAccountId: accountId.trim(), cfNsLicense: nsLicense.trim(), cfNsServices: nsServices.trim(),
+      })
+      await audit('cf_settings_update', undefined, { accountId: accountId.trim() })
+      toast('تم حفظ إعدادات Cloudflare ✓', 'ok')
+      setCfToken('')
+      void checkKv()
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  async function testCloudflare() {
+    setCfTesting(true)
+    try {
+      const res = await bridge.cf.test()
+      toast(res.ok ? '✅ الاتصال بـ Cloudflare KV يعمل' : `تعذر الاتصال: ${res.error ?? ''}`, res.ok ? 'ok' : 'error')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setCfTesting(false)
+  }
+
+  async function saveBot() {
+    if (token && !isValidBotToken(token)) { toast('صيغة التوكن غير صحيحة', 'error'); return }
+    if (chatId && !isValidChatId(chatId)) { toast('معرّف المحادثة يجب أن يكون رقماً', 'error'); return }
+    setBusy(true)
+    try {
+      await saveSecrets({ ...(token ? { botToken: token } : {}), adminChatId: chatId.trim() })
+      await refreshBot()
+      await audit('bot_settings_update', undefined, {})
+      toast('تم حفظ إعدادات البوت ✓', 'ok')
+      setToken('')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  async function importKey() {
+    const value = privateKey.trim()
+    if (!value) { toast('الصق المفتاح الخاص أولاً', 'error'); return }
+    setBusy(true)
+    try {
+      await saveSecrets({ privateKeyB64u: value })
+      await audit('key_import', undefined, {})
+      const check = await bridge.license.checkKey()
+      setKeyStatus(check)
+      setPrivateKey('')
+      if (check.present && !check.matchesPublic) {
+        toast('⚠️ المفتاح محفوظ لكنه لا يطابق المفتاح العام في التطبيق — لن تُقبل المفاتيح الصادرة به', 'error')
+      } else {
+        toast('✅ تم استيراد المفتاح الخاص — التوقيع يتم محلياً الآن', 'ok')
+      }
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  return (
+    <div className="grid-2" style={{ alignItems: 'start' }}>
+      <div className="card">
+        <div className="card-title">👤 بيانات مطوّر اللوحة</div>
+        <Field label="الاسم" value={name} onChange={setName} />
+        <Field label="رقم الهاتف" value={phone} onChange={setPhone} dir="ltr" />
+        <Field label="البريد الإلكتروني" value={email} onChange={setEmail} dir="ltr" />
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <div className="row">
+            <Btn size="sm" kind={theme === 'dark' ? 'primary' : 'default'} onClick={() => setTheme('dark')}>🌙 ليلي</Btn>
+            <Btn size="sm" kind={theme === 'light' ? 'primary' : 'default'} onClick={() => setTheme('light')}>☀️ نهاري</Btn>
+          </div>
+          <Btn kind="primary" disabled={busy} onClick={() => void saveProfile()}>حفظ الحساب</Btn>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">🔐 كلمة مرور اللوحة</div>
+        <div className="card" style={{ fontSize: 13.5, marginBlockEnd: 12 }}>
+          🔑 لاستعادة كلمة المرور أو تغييرها: رمز تحقق (6 أرقام) يُرسل إلى <b>محادثة البوت</b> على تليجرام —
+          لن يدخل أحد غيرك لأن الأمر محصور بمعرّف المطوّر.
+          {hasBotToken && adminChatId ? <div className="muted" style={{ marginBlockStart: 6 }}>البوت جاهز {botUsername ? ` (@${botUsername})` : ''} — يمكنك الاستعادة الآن.</div>
+            : <div className="muted" style={{ marginBlockStart: 6 }}>⚠️ أكمل إعدادات البوت بالأسفل أولاً حتى تعمل الاستعادة.</div>}
+        </div>
+        <Btn onClick={() => toast('استخدم زر «نسيت كلمة المرور؟» في شاشة القفل، أو اقفل اللوحة ثم اضغطه', 'info')}>طلب رمز التغيير</Btn>
+        <div className="hr" />
+        <div className="muted" style={{ fontSize: 12.5 }}>
+          حماية إضافية: رمز OTP صالح 5 دقائق، و3 محاولات كحد أقصى، والرمز لا يُخزَّن نصاً (بصمة SHA-256 فقط).
+        </div>
+      </div>
+
+      <div className="card" style={{ gridColumn: '1 / -1' }}>
+        <div className="card-title">
+          ☁️ إعدادات Cloudflare
+          <Badge kind={hasCfToken && cfAccountId ? 'ok' : 'warn'}>{hasCfToken && cfAccountId ? 'الحساب مضبوط' : 'الحساب ناقص'}</Badge>
+        </div>
+
+        <div className="grid-2">
+          <Field label="Account ID" value={accountId} onChange={setAccountId} mono hint="32 حرفاً hex — صفحة الحساب في Cloudflare" />
+          <Field label="API Token" value={cfToken} onChange={setCfToken} type="password" mono
+            hint={hasCfToken ? 'محفوظ مشفراً — اكتب توكن جديداً للتغيير. الصلاحية: Workers KV Storage (Read + Write)' : 'الصلاحية المطلوبة: Workers KV Storage — Read و Write'} />
+        </div>
+
+        <div className="hr" />
+        <div className="row" style={{ justifyContent: 'space-between', marginBlockEnd: 10 }}>
+          <b>مساحات KV (Namespaces)</b>
+          <div className="row">
+            <Btn size="sm" onClick={() => void discover()} disabled={nsBusy || !hasCfToken || !accountId.trim()}>
+              {nsBusy ? '…' : '🔍 اكتشف من الحساب'}
+            </Btn>
+            <Btn size="sm" onClick={() => void testCloudflare()} disabled={cfTesting || !hasCfToken}>
+              {cfTesting ? '…' : 'اختبار الاتصال'}
+            </Btn>
+          </div>
+        </div>
+
+        {nsError ? <div className="notice notice-danger" style={{ marginBlockEnd: 10 }}>{nsError}</div> : null}
+
+        <div className="grid-2">
+          <div className="card" style={{ background: 'var(--bg-soft)' }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <b>{ROLE_LABELS_AR.license}</b>
+              <Badge kind={nsLicense.trim() ? 'ok' : 'danger'}>{nsLicense.trim() ? 'مضبوطة' : 'ناقصة'}</Badge>
+            </div>
+            <div className="muted" style={{ fontSize: 12.5, marginBlock: '6px 10px' }}>{ROLE_PURPOSE_AR.license}</div>
+            <input className="input input-mono" value={nsLicense} dir="ltr" placeholder="SHOPSYS_CONTROL id"
+              onChange={(e) => setNsLicense(e.target.value)} />
+            <div className="muted" style={{ fontSize: 12, marginBlockStart: 6 }}>الاسم المتوقع: <span className="mono">SHOPSYS_CONTROL</span></div>
+          </div>
+
+          <div className="card" style={{ background: 'var(--bg-soft)' }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <b>{ROLE_LABELS_AR.services}</b>
+              <Badge kind={nsServices.trim() ? 'ok' : 'danger'}>{nsServices.trim() ? 'مضبوطة' : 'ناقصة'}</Badge>
+            </div>
+            <div className="muted" style={{ fontSize: 12.5, marginBlock: '6px 10px' }}>{ROLE_PURPOSE_AR.services}</div>
+            <input className="input input-mono" value={nsServices} dir="ltr" placeholder="SHOPSYS_KV id"
+              onChange={(e) => setNsServices(e.target.value)} />
+            <div className="row" style={{ justifyContent: 'space-between', marginBlockStart: 6 }}>
+              <span className="muted" style={{ fontSize: 12 }}>الاسم المتوقع: <span className="mono">SHOPSYS_KV</span></span>
+              <Btn size="sm" kind="ghost" onClick={() => void createServicesNs()} disabled={nsBusy || !hasCfToken}>
+                ➕ إنشاء المساحة
+              </Btn>
+            </div>
+          </div>
+        </div>
+
+        {nsList.length > 0 ? (
+          <>
+            <div className="section-title">المساحات المكتشفة في الحساب ({nsList.length})</div>
+            <div className="table-wrap">
+              <table className="table">
+                <thead><tr><th>الاسم</th><th>المعرّف</th><th>تعيين كـ</th></tr></thead>
+                <tbody>
+                  {nsList.map((n) => (
+                    <tr key={n.id}>
+                      <td>{n.title}</td>
+                      <td className="mono">{n.id}</td>
+                      <td>
+                        <div className="row">
+                          <Btn size="sm" kind={nsLicense.trim() === n.id ? 'primary' : 'default'} onClick={() => assign('license', n.id)}>تراخيص</Btn>
+                          <Btn size="sm" kind={nsServices.trim() === n.id ? 'primary' : 'default'} onClick={() => assign('services', n.id)}>خدمات</Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+
+        {createdNs ? (
+          <div className="notice notice-warn" style={{ marginBlockStart: 12, display: 'block' }}>
+            <b>الخطوة الأخيرة لتفعيل الدعم والأعلام:</b> اربط المساحة الجديدة بخدمة تَحَكَّم السحابية ثم أعد النشر
+            (هذا الملف في مشروع تَحَكَّم — لا تعدّل عليه من هنا):
+            <pre className="mono" style={{ marginBlockStart: 8, whiteSpace: 'pre-wrap' }}>{servicesBindingSnippet(createdNs)}</pre>
+            ثم اضغط «حفظ إعدادات Cloudflare» و«اختبار الاتصال».
+          </div>
+        ) : null}
+
+        <div className="row" style={{ justifyContent: 'flex-end', marginBlockStart: 12 }}>
+          <Btn kind="primary" disabled={busy} onClick={() => void saveCloudflare()}>حفظ إعدادات Cloudflare</Btn>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">🤖 إعدادات البوت والتليجرام</div>
+        <Field label="توكن البوت" value={token} onChange={setToken} type="password" mono hint={hasBotToken ? 'محفوظ مشفراً — اكتب توكن جديداً للتغيير' : 'من BotFather'} />
+        <Field label="معرّف محادثة المطوّر" value={chatId} onChange={setChatId} mono hint="Chat ID الخاص بك — وجهة رموز التحقق والإشعارات" />
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <Btn onClick={() => void refreshBot()} disabled={!hasBotToken}>فحص الاتصال</Btn>
+          <Btn kind="primary" disabled={busy} onClick={() => void saveBot()}>حفظ إعدادات البوت</Btn>
+        </div>
+      </div>
+
+      <div className="card" style={{ gridColumn: '1 / -1' }}>
+        <div className="card-title">🔑 مفتاح التوقيع الخاص (Ed25519)
+          {keyStatus ? <Badge kind={keyStatus.present ? (keyStatus.matchesPublic && publicKeyMatches ? 'ok' : 'danger') : 'warn'}>
+            {keyStatus.present ? (keyStatus.matchesPublic ? 'مطابق للمفتاح العام ✓' : 'غير مطابق للمفتاح العام!') : 'غير مُستورد'}
+          </Badge> : null}
+        </div>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 12 }}>
+          يُخزَّن <b>مشفَّراً على جهازك</b> (Windows DPAPI عبر safeStorage) ولا يُرسل لأي جهة ولا يُكتب في git أو السجلات.
+          استورد هنا فقط إن لم يكن مستورداً بعد. {!isDesktop() ? ' (في المتصفح غير متاح)' : ''}
+        </div>
+        <Field label="الصق المفتاح الخاص (base64url / pkcs8)" value={privateKey} onChange={setPrivateKey} type="password" mono
+          hint={`سيُتحقق منه مقابل المفتاح العام: ${DEV_PUBLIC_KEY_LABEL}`} />
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <Btn kind="danger" onClick={() => setConfirmForget(true)} disabled={!keyStatus?.present}>حذف المفتاح من الجهاز</Btn>
+          <Btn kind="primary" disabled={busy || !privateKey.trim()} onClick={() => void importKey()}>استيراد المفتاح</Btn>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">
+          🔄 التحديثات
+          <Badge kind={updateState?.status === 'available' || updateState?.status === 'ready' ? 'warn' : 'muted'}>
+            {updateState?.status === 'available' ? `تنزيل تلقائي ${updateState.version}`
+              : updateState?.status === 'ready' ? `جاهز ${updateState.version}`
+              : updateState?.status === 'downloading' ? `جارٍ التنزيل ${updateState.percent}%`
+              : updateState?.status === 'latest' ? 'أحدث إصدار'
+              : updateState?.status === 'unsupported' ? 'في النسخة المثبّتة فقط'
+              : 'لا فحص بعد'}
+          </Badge>
+        </div>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
+          النسخة الحالية: <b className="mono">{updateState?.currentVersion ?? __APP_VERSION__}</b> — يفحص التطبيق
+          رف الإصدارات <b>العام</b> تلقائياً بعد الإقلاع ثم كل 6 ساعات، ويُنزّل التحديث <b>في الخلفية</b>،
+          ثم يُثبَّته <b>عند إغلاق اللوحة</b>. لا حاجة لأي إجراء منك (ويمكنك التثبيت فوراً بالزر أدناه).
+          <br />
+          مصدر التحديث: <span className="mono">github.com/contashepo-create/shopsys-controler-updater</span>
+          {' '}(مستودع بلا كود) — وكود اللوحة يبقى في المستودع الخاص.
+        </div>
+        {updateState?.error && updateState.status !== 'unsupported' ? (
+          <div className="notice notice-danger" style={{ display: 'block' }}>{updateState.error}</div>
+        ) : null}
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <Btn onClick={() => void checkUpdates().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر الفحص', 'error') })}>فحص الآن</Btn>
+          {updateState?.status === 'available' ? (
+            <Btn kind="primary" onClick={() => void downloadUpdate().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر التنزيل', 'error') })}>تنزيل التحديث</Btn>
+          ) : null}
+          {updateState?.status === 'ready' ? (
+            <Btn kind="primary" onClick={() => void installUpdate()}>إعادة التشغيل والتثبيت الآن</Btn>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">
+          💾 بياناتك لا تضيع مع التحديث
+          <Badge kind={dataInfo && dataInfo.backups > 0 ? 'ok' : 'muted'}>
+            {dataInfo ? `${dataInfo.backups} لقطة احتياطية` : 'غير متاح في المتصفح'}
+          </Badge>
+        </div>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
+          اسمك وكلمة مرورك ومفاتيح Cloudflare والبوت ومفتاح التوقيع محفوظة في مجلد بياناتك على جهازك،
+          و<b>تحديث النسخة يثبّت فوق القديم دون أن يمسّها</b> — لن تعيد كتابة أي منها. وفوق ذلك يأخذ
+          التطبيق لقطة احتياطية تلقائية عند كل تشغيل تغيّرت فيه البيانات (آخر 6 لقطات محفوظة).
+        </div>
+        {dataInfo ? (
+          <div className="muted" style={{ fontSize: 12, marginBlockEnd: 10 }}>
+            المسار: <span className="mono" dir="ltr">{dataInfo.path}</span>
+            {dataInfo.lastBackupAt ? <><br />آخر لقطة: <span className="mono" dir="ltr">{dataInfo.lastBackupAt}</span></> : null}
+          </div>
+        ) : null}
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <Btn
+            disabled={!isDesktop}
+            onClick={() => void bridge.app.openDataFolder().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر فتح المجلد', 'error') })}
+          >
+            📂 فتح مجلد البيانات
+          </Btn>
+          <Btn
+            kind="primary"
+            disabled={!isDesktop}
+            onClick={() => void bridge.app.snapshotData().then((r) => {
+              if (r.error) { toast(r.error, 'error'); return }
+              toast(r.created ? 'تم أخذ لقطة احتياطية الآن' : 'البيانات بلا تغيير — اللقطة السابقة كافية', 'ok')
+              void bridge.app.dataInfo().then(setDataInfo).catch(() => {})
+            })}
+          >
+            🛡️ نسخة احتياطية الآن
+          </Btn>
+        </div>
+      </div>
+
+      <div className="card" style={{ gridColumn: '1 / -1' }}>
+        <div className="card-title">🔗 الربط بالـ Worker والتطبيق</div>
+        <ul className="plain" style={{ fontSize: 13.5 }}>
+          <li>Worker الترخيص: <span className="mono">{DEFAULT_BINDING.licenseWorkerUrl}</span></li>
+          <li>Worker الخدمات: <span className="mono">{DEFAULT_BINDING.servicesWorkerUrl}</span></li>
+        </ul>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockStart: 8 }}>
+          هذه العناوين ثابتة من مشروع تَحَكَّم — لا تُغيّرها إلا إذا أعدت نشر الـ workers على نطاق جديد.
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={confirmForget}
+        title="حذف المفتاح الخاص من هذا الجهاز"
+        message="لن تستطيع إصدار مفاتيح جديدة حتى تستورد المفتاح مرة أخرى. المفاتيح الصادرة سابقاً تبقى تعمل عند العملاء."
+        confirmText="حذف"
+        danger
+        onCancel={() => setConfirmForget(false)}
+        onConfirm={async () => {
+          setConfirmForget(false)
+          try {
+            await saveSecrets({ privateKeyB64u: '' })
+            setKeyStatus(await bridge.license.checkKey())
+            toast('تم حذف المفتاح من الجهاز', 'ok')
+          } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+        }}
+      />
+    </div>
+  )
+}
+
+export { maskToken }
