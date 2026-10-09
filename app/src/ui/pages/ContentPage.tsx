@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { bridge } from '../../data/bridge.ts'
 import { useDataStore } from '../../stores/data.store.ts'
-import { updateAbout, updateVersion, updateGlobalSettings } from '../../data/actions.ts'
-import { PLAN_LABELS_AR, LICENSE_FEATURES, FEATURE_LABELS_AR, EXTRA_MODULES, MODULE_LABELS_AR, type LicensePlan } from '../../core/license.ts'
+import { updateAbout, updateVersion } from '../../data/actions.ts'
 import { Btn, Field, Textarea, useToast, Badge } from '../components/ui.tsx'
 
 export function ContentPage() {
@@ -22,21 +21,32 @@ export function ContentPage() {
   const [releaseNotes, setReleaseNotes] = useState('')
   const [currentVersion, setCurrentVersion] = useState<string | null>(null)
 
-  const [defPlan, setDefPlan] = useState<LicensePlan>('basic')
-  const [defDays, setDefDays] = useState('365')
-  const [defUsers, setDefUsers] = useState('')
-  const [defBranches, setDefBranches] = useState('')
-  const [defFeatures, setDefFeatures] = useState<string[]>([])
-  const [defModules, setDefModules] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  // قراءة فاشلة لأي من القسمين = نموذج فارغ؛ حفظه كان سيمسح المحتوى الحقيقي عند كل العملاء
+  const [aboutLoad, setAboutLoad] = useState<'loading' | 'ok' | string>('loading')
+  const [versionLoad, setVersionLoad] = useState<'loading' | 'ok' | string>('loading')
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
+    let cancelled = false
+    setAboutLoad('loading'); setVersionLoad('loading')
     void (async () => {
-      const [about, ver, settings] = await Promise.all([
-        bridge.cf.get('services', 'about'),
-        bridge.cf.get('services', 'version'),
-        bridge.cf.get('license', 'settings:global'),
-      ])
+      let about: Awaited<ReturnType<typeof bridge.cf.get>>
+      let ver: Awaited<ReturnType<typeof bridge.cf.get>>
+      try {
+        [about, ver] = await Promise.all([
+          bridge.cf.get('services', 'about'),
+          bridge.cf.get('services', 'version'),
+        ])
+      } catch (e) {
+        if (cancelled) return
+        const msg = e instanceof Error ? e.message : String(e)
+        setAboutLoad(msg); setVersionLoad(msg)
+        return
+      }
+      if (cancelled) return
+      setAboutLoad(about.ok ? 'ok' : (about.error ?? 'تعذر القراءة'))
+      setVersionLoad(ver.ok ? 'ok' : (ver.error ?? 'تعذر القراءة'))
       if (about.ok && about.value) {
         try {
           const o = JSON.parse(about.value) as Record<string, string>
@@ -52,24 +62,19 @@ export function ContentPage() {
           setReleaseNotes(String(o.releaseNotesAr ?? '')); setMandatory(Boolean(o.mandatory))
         } catch { /* ignore */ }
       }
-      if (settings.ok && settings.value) {
-        try {
-          const o = JSON.parse(settings.value) as Record<string, unknown>
-          setDefPlan((o.plan as LicensePlan) ?? 'basic')
-          setDefDays(String(o.days ?? 365))
-          setDefUsers(o.extraUsers ? String(o.extraUsers) : '')
-          setDefBranches(o.extraBranches ? String(o.extraBranches) : '')
-          setDefFeatures(Array.isArray(o.features) ? o.features as string[] : [])
-          setDefModules(Array.isArray(o.extraModules) ? o.extraModules as string[] : [])
-        } catch { /* ignore */ }
-      }
     })()
-  }, [])
+    return () => { cancelled = true }
+  }, [reload])
 
-  const toggle = (list: string[], set: (v: string[]) => void, v: string) =>
-    set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
+  const loadBanner = (state: string, what: string) => state === 'ok' || state === 'loading' ? null : (
+    <div style={{ color: 'var(--danger)', fontSize: 12.5, marginBlockEnd: 8 }}>
+      ⚠️ تعذر قراءة {what} الحالي — {state}. الحفظ معطّل حتى لا يُكتب نموذج فارغ فوقه.{' '}
+      <Btn size="sm" onClick={() => setReload((n) => n + 1)}>إعادة المحاولة</Btn>
+    </div>
+  )
 
   async function saveAbout() {
+    if (aboutLoad !== 'ok') { toast('لم تُقرأ «حول» الحالية بعد — أعد المحاولة أولاً', 'error'); return }
     setBusy(true)
     try {
       await updateAbout({
@@ -82,6 +87,7 @@ export function ContentPage() {
   }
 
   async function saveVersion() {
+    if (versionLoad !== 'ok') { toast('لم تُقرأ بيانات التحديث الحالية بعد — أعد المحاولة أولاً', 'error'); return }
     if (!/^\d+\.\d+\.\d+$/.test(version.trim())) { toast('صيغة النسخة يجب أن تكون x.y.z', 'error'); return }
     setBusy(true)
     try {
@@ -92,23 +98,11 @@ export function ContentPage() {
     setBusy(false)
   }
 
-  async function saveDefaults() {
-    setBusy(true)
-    try {
-      await updateGlobalSettings({
-        plan: defPlan, days: Number(defDays) || 365,
-        features: defFeatures as never, extraUsers: Number(defUsers) || 0,
-        extraBranches: Number(defBranches) || 0, extraModules: defModules,
-      })
-      toast('تم حفظ الإعدادات الافتراضية للرخص الجديدة ✓', 'ok')
-    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
-    setBusy(false)
-  }
-
   return (
     <div className="grid-2" style={{ alignItems: 'start' }}>
       <div className="card">
         <div className="card-title">📄 محتوى «حول» (يظهر لكل العملاء)</div>
+        {loadBanner(aboutLoad, 'محتوى «حول»')}
         <Field label="العنوان" value={aboutTitle} onChange={setAboutTitle} />
         <Textarea label="النص" value={aboutBody} onChange={setAboutBody} rows={5} />
         <div className="grid-2">
@@ -117,7 +111,7 @@ export function ContentPage() {
         </div>
         <Field label="الموقع" value={aboutWebsite} onChange={setAboutWebsite} dir="ltr" />
         <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Btn kind="primary" disabled={busy} onClick={() => void saveAbout()}>حفظ في الاسمين</Btn>
+          <Btn kind="primary" disabled={busy || aboutLoad !== 'ok'} onClick={() => void saveAbout()}>حفظ في الاسمين</Btn>
         </div>
       </div>
 
@@ -128,7 +122,7 @@ export function ContentPage() {
             نقطة <span className="mono">/version</span> تُقرأ من مساحة الخدمات <span className="mono">SHOPSYS_KV</span> وهي غير مضبوطة.
             <div style={{ marginBlockStart: 8 }}><Link className="btn btn-sm" to="/settings">اضبطها من الإعدادات</Link></div>
           </div>
-        ) : null}
+        ) : loadBanner(versionLoad, 'إعلان التحديث')}
         <Field label="النسخة الجديدة (x.y.z)" value={version} onChange={setVersion} dir="ltr" placeholder="1.0.20" />
         <Field label="رابط التنزيل" value={downloadUrl} onChange={setDownloadUrl} dir="ltr" />
         <Field label="SHA-256" value={sha256} onChange={setSha256} mono />
@@ -138,42 +132,11 @@ export function ContentPage() {
           <span>تحديث إجباري</span>
         </label>
         <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Btn kind="primary" disabled={busy || !servicesAvailable} onClick={() => void saveVersion()}>نشر التحديث</Btn>
+          <Btn kind="primary" disabled={busy || !servicesAvailable || versionLoad !== 'ok'} onClick={() => void saveVersion()}>نشر التحديث</Btn>
         </div>
       </div>
 
-      <div className="card" style={{ gridColumn: '1 / -1' }}>
-        <div className="card-title">⚙️ الإعدادات الافتراضية للرخص الجديدة (settings:global)</div>
-        <div className="grid-2">
-          <Field label="الخطة الافتراضية" value={defPlan} onChange={(v) => setDefPlan(v as LicensePlan)} />
-          <Field label="المدة الافتراضية (أيام)" value={defDays} onChange={setDefDays} dir="ltr" />
-          <Field label="+ مستخدمون" value={defUsers} onChange={setDefUsers} dir="ltr" />
-          <Field label="+ فروع" value={defBranches} onChange={setDefBranches} dir="ltr" />
-        </div>
-        <div className="section-title">الميزات الافتراضية</div>
-        <div className="row">
-          {LICENSE_FEATURES.map((f) => (
-            <label key={f} className="check-row" style={{ inlineSize: 'auto' }}>
-              <input type="checkbox" checked={defFeatures.includes(f)} onChange={() => toggle(defFeatures, setDefFeatures, f)} />
-              <span>{FEATURE_LABELS_AR[f]}</span>
-            </label>
-          ))}
-        </div>
-        <div className="section-title">الأقسام الافتراضية</div>
-        <div className="row">
-          {EXTRA_MODULES.map((m) => (
-            <label key={m} className="check-row" style={{ inlineSize: 'auto' }}>
-              <input type="checkbox" checked={defModules.includes(m)} onChange={() => toggle(defModules, setDefModules, m)} />
-              <span>{MODULE_LABELS_AR[m] ?? m}</span>
-            </label>
-          ))}
-        </div>
-        <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Btn kind="primary" disabled={busy} onClick={() => void saveDefaults()}>حفظ الافتراضيات</Btn>
-        </div>
-      </div>
     </div>
   )
 }
 
-export { PLAN_LABELS_AR }

@@ -42,7 +42,7 @@ export const FEATURE_LABELS_AR: Record<LicenseFeature, string> = {
   multi_user_lan: 'تعدد المستخدمين على الشبكة',
 }
 
-/** الوحدات الـ17 القابلة للمنح بمفتاح موقّع (extraModules — عقد إضافة قسم خارج النشاط) */
+/** الوحدات الـ18 القابلة للمنح بمفتاح موقّع (extraModules — عقد إضافة قسم خارج النشاط) */
 export const EXTRA_MODULES: readonly string[] = [
   'pos', 'inventory', 'purchases', 'installments', 'recipes', 'processing', 'jewelry',
   'maintenance', 'laundry', 'booking', 'equipment_rental', 'logistics', 'lab',
@@ -255,5 +255,7 @@ export function expiresAfterDays(days: number | null | undefined, todayIso = new
 }
 
 export function daysBetween(fromIso: string, toIso: string): number {
-  return Math.round((Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z')) / 86400000)
+  // نقبل التاريخ وحده أو ISO كاملاً (2026-10-09T12:00:00Z) — كان الثاني يعطي NaN
+  const day = (s: string) => Date.parse(String(s).slice(0, 10) + 'T00:00:00Z')
+  return Math.round((day(toIso) - day(fromIso)) / 86400000)
 }

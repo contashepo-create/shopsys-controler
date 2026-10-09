@@ -7,6 +7,7 @@
  */
 
 import type { CustomerView } from './customers.ts'
+import { activityLabel } from './activities.ts'
 
 export interface CloudNotice {
   id: string
@@ -47,7 +48,8 @@ export function parseNoticeList(raw: string | null): CloudNotice[] {
  * drop expired, push, keep the last 50.
  */
 export function appendNotice(raw: string | null, notice: CloudNotice, now = new Date()): string {
-  const previous = parseNoticeList(raw).filter((n) => n?.expiresAt && Date.parse(n.expiresAt) > now.getTime())
+  // بلا تاريخ انتهاء = دائم (يبقى)؛ المنتهي أو ذو التاريخ التالف يُنظَّف
+  const previous = parseNoticeList(raw).filter((n) => n != null && (n.expiresAt == null || Date.parse(n.expiresAt) > now.getTime()))
   previous.push(notice)
   return JSON.stringify(previous.slice(-NOTICE_MAX_PER_LIST))
 }
@@ -57,6 +59,11 @@ export type NoticeTargeting =
   | { type: 'device'; deviceId: string }
   | { type: 'group'; deviceIds: string[] }
   | { type: 'activity'; activityId: string }
+
+/** نشاط العميل الفعلي للاستهداف: اختياره في التطبيق ثم نشاط مفتاحه. */
+export function customerActivity(c: { activityId?: string | null; clientActivityId?: string | null }): string | null {
+  return c.clientActivityId ?? c.activityId ?? null
+}
 
 export type ResolvedTargets = { mode: 'global' } | { mode: 'devices'; deviceIds: string[] }
 
@@ -70,7 +77,7 @@ export function resolveTargetDevices(targeting: NoticeTargeting, customers: read
     case 'group':
       return { mode: 'devices', deviceIds: [...new Set(targeting.deviceIds)] }
     case 'activity': {
-      const ids = customers.filter((c) => c.activityId === targeting.activityId).map((c) => c.deviceId)
+      const ids = customers.filter((c) => customerActivity(c) === targeting.activityId).map((c) => c.deviceId)
       return { mode: 'devices', deviceIds: ids }
     }
   }
@@ -91,8 +98,169 @@ export function describeTargeting(targeting: NoticeTargeting, customers: readonl
     case 'group':
       return `مجموعة (${targeting.deviceIds.length} عميل)`
     case 'activity': {
-      const count = customers.filter((c) => c.activityId === targeting.activityId).length
-      return `نشاط «${targeting.activityId}» (${count} عميل)`
+      const count = customers.filter((c) => customerActivity(c) === targeting.activityId).length
+      return `نشاط «${activityLabel(targeting.activityId)}» (${count} عميل)`
     }
   }
+}
+
+/* ─── سجل الإشعارات المرسلة: تعديل / حذف / تتبع القراءة ─── */
+
+export const NOTICE_KEY_PREFIX = 'notices:'
+export const NOTICE_GLOBAL_KEY = 'notices:global'
+/**
+ * إيصالات القراءة — يكتبها الـ worker عندما يبلّغ التطبيق أن العميل فتح الإشعار:
+ *   noticeread:<deviceId> → { "<noticeId>": "<ISO وقت القراءة>", ... }
+ * (العقد موثّق في docs/تتبع-قراءة-الإشعارات.md)
+ */
+export const NOTICE_READ_PREFIX = 'noticeread:'
+
+export interface SentNotice {
+  notice: CloudNotice & { editedAt?: string }
+  scope: 'global' | 'devices'
+  /** الأجهزة المستهدفة (فارغة للعام = كل العملاء) */
+  deviceIds: string[]
+  /** مفاتيح KV التي يوجد فيها الإشعار — يُعدَّل/يُحذف منها كلها */
+  listKeys: string[]
+}
+
+/** يجمع كل قوائم notices:* في سجل واحد — إشعار المجموعة/النشاط الواحد يظهر مرة واحدة بكل أجهزته. */
+export function collectSentNotices(lists: readonly (readonly [string, string | null])[]): SentNotice[] {
+  const byId = new Map<string, SentNotice>()
+  for (const [key, raw] of lists) {
+    if (!key.startsWith(NOTICE_KEY_PREFIX)) continue
+    const isGlobal = key === NOTICE_GLOBAL_KEY
+    const deviceId = isGlobal ? null : key.slice(NOTICE_KEY_PREFIX.length)
+    for (const n of parseNoticeList(raw)) {
+      let entry = byId.get(n.id)
+      if (!entry) {
+        entry = { notice: n, scope: isGlobal ? 'global' : 'devices', deviceIds: [], listKeys: [] }
+        byId.set(n.id, entry)
+      }
+      if (isGlobal) entry.scope = 'global'
+      if (deviceId && !entry.deviceIds.includes(deviceId)) entry.deviceIds.push(deviceId)
+      if (!entry.listKeys.includes(key)) entry.listKeys.push(key)
+    }
+  }
+  // createdAt قد يغيب في صيغ قديمة — لا ينهار السجل كله بسببها
+  return [...byId.values()].sort((a, b) => String(b.notice.createdAt ?? '').localeCompare(String(a.notice.createdAt ?? '')))
+}
+
+export interface NoticePatch {
+  title?: string
+  body?: string
+  expiresAt?: string | null
+}
+
+/** القائمة الخام كما هي في KV — التعديل/الحذف لا يُسقط عناصر لا تفهمها اللوحة (صيغ قديمة/أحدث). */
+function rawNoticeArray(raw: string | null): unknown[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw) as unknown
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+const hasId = (n: unknown, id: string): boolean => n != null && typeof n === 'object' && (n as { id?: unknown }).id === id
+
+/** يعدّل إشعاراً داخل قائمة (نفس المعرّف، فيبقى عند العميل نفس الإشعار بنص جديد). */
+export function editNoticeInList(raw: string | null, id: string, patch: NoticePatch, now = new Date()): { raw: string; changed: boolean } {
+  const list = rawNoticeArray(raw)
+  let changed = false
+  const next = list.map((n) => {
+    if (!hasId(n, id)) return n
+    changed = true
+    return {
+      ...(n as object),
+      ...(patch.title !== undefined ? { title: patch.title.trim() || 'رسالة من المطوّر' } : {}),
+      ...(patch.body !== undefined ? { body: patch.body } : {}),
+      ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
+      editedAt: now.toISOString(),
+    }
+  })
+  return { raw: JSON.stringify(next), changed }
+}
+
+/** يحذف إشعاراً من قائمة. */
+export function removeNoticeFromList(raw: string | null, id: string): { raw: string; changed: boolean } {
+  const list = rawNoticeArray(raw)
+  const next = list.filter((n) => !hasId(n, id))
+  return { raw: JSON.stringify(next), changed: next.length !== list.length }
+}
+
+/** noticeread:<deviceId> → خريطة معرّف الإشعار ← وقت القراءة (يقبل أيضاً مصفوفة معرّفات أو [{id, at}]). */
+export function parseNoticeReads(raw: string | null): Record<string, string> {
+  if (!raw) return {}
+  try {
+    const o = JSON.parse(raw) as unknown
+    // كائن بلا نموذج أولي: مفاتيح مثل «__proto__» تُحفظ كمفاتيح عادية بلا تلويث
+    const out = Object.create(null) as Record<string, string>
+    if (Array.isArray(o)) {
+      for (const item of o) {
+        if (typeof item === 'string') out[item] = ''
+        else if (item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string') {
+          const at = (item as { at?: unknown }).at
+          out[(item as { id: string }).id] = typeof at === 'string' ? at : ''
+        }
+      }
+      return out
+    }
+    if (o && typeof o === 'object') {
+      for (const [k, v] of Object.entries(o as Record<string, unknown>)) out[k] = typeof v === 'string' ? v : ''
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+export type NoticeReadState = 'read' | 'delivered' | 'pending'
+
+export interface NoticeRecipient {
+  deviceId: string
+  customer: string
+  state: NoticeReadState
+  /** وقت القراءة أو آخر ظهور */
+  at: string | null
+}
+
+export const READ_STATE_LABELS_AR: Record<NoticeReadState, string> = {
+  read: 'قرأه',
+  delivered: 'وصله (فتح التطبيق بعد الإرسال)',
+  pending: 'لم يصله بعد',
+}
+
+/**
+ * حالة كل مستلم:
+ *  • قرأه   — يوجد إيصال قراءة في noticeread:<deviceId>
+ *  • وصله   — اتصل تطبيقه بالسحابة بعد إرسال الإشعار (lastSeenAt) ولا إيصال قراءة
+ *  • لم يصله — لم يتصل منذ الإرسال
+ */
+export function noticeRecipients(
+  sent: SentNotice,
+  customers: readonly Pick<CustomerView, 'deviceId' | 'customer' | 'lastSeenAt'>[],
+  readsByDevice: ReadonlyMap<string, Record<string, string>>,
+): NoticeRecipient[] {
+  const byId = new Map(customers.map((c) => [c.deviceId, c]))
+  const ids = sent.scope === 'global' ? customers.map((c) => c.deviceId) : sent.deviceIds
+  // بعد التعديل لا يُعدّ «وصله» إلا من اتصل بعد آخر تعديل (وإلا فقد رأى النص القديم فقط)
+  const edited = sent.notice.editedAt ? Date.parse(sent.notice.editedAt) : NaN
+  const created = Date.parse(sent.notice.createdAt)
+  const since = Number.isFinite(edited) && edited > created ? edited : created
+  return ids.map((deviceId) => {
+    const c = byId.get(deviceId)
+    const reads = readsByDevice.get(deviceId)
+    if (reads && Object.hasOwn(reads, sent.notice.id)) return { deviceId, customer: c?.customer ?? '', state: 'read' as const, at: reads[sent.notice.id] || null }
+    const seen = c?.lastSeenAt ?? null
+    if (seen && Date.parse(seen) >= since) return { deviceId, customer: c?.customer ?? '', state: 'delivered' as const, at: seen }
+    return { deviceId, customer: c?.customer ?? '', state: 'pending' as const, at: seen }
+  })
+}
+
+export function summarizeRecipients(list: readonly NoticeRecipient[]): Record<NoticeReadState, number> & { total: number } {
+  const out = { read: 0, delivered: 0, pending: 0, total: list.length }
+  for (const r of list) out[r.state]++
+  return out
 }

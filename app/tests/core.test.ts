@@ -158,7 +158,7 @@ describe('نموذج العملاء (رصد + بحث)', () => {
   it('البحث والترتيب والفلاتر', () => {
     const base: CustomerView = {
       deviceId: 'SHOP-AAAA-BBBB-CCCC', customer: 'بقالة النور', email: null, plan: 'basic', expiresAt: '2027-01-01',
-      activityId: 'grocery', features: [], extraUsers: 0, extraBranches: 0, extraModules: [], fingerprint: null,
+      activityId: 'grocery', clientActivityId: null, features: [], extraUsers: 0, extraBranches: 0, extraModules: [], fingerprint: null, licenseKey: null, licenseIssuedAt: null, lastSeenAt: null,
       status: 'active', lastActivityAt: null, lastSupportAt: null, message: '',
     }
     const list = [base, { ...base, deviceId: 'SHOP-DDDD-EEEE-FFFF', customer: 'صيدلية الشفاء', status: 'expired' as const }, { ...base, deviceId: 'SHOP-GGGG-HHHH-IIII', customer: 'مطعم', status: 'revoked' as const }]

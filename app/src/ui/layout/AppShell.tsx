@@ -1,7 +1,7 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, KeyRound, SlidersHorizontal, BellRing, Headset,
-  Info, Bot, ScrollText, Settings, Lock, RefreshCw,
+  LayoutDashboard, Users, KeyRound, BellRing, Headset,
+  Info, ScrollText, Settings, Lock, RefreshCw,
 } from 'lucide-react'
 import { useSessionStore } from '../../stores/session.store.ts'
 import { useConfigStore } from '../../stores/config.store.ts'
@@ -13,12 +13,10 @@ import { UpdateBanner } from '../components/UpdateBanner.tsx'
 const NAV = [
   { to: '/dashboard', label: 'لوحة التحكم', icon: LayoutDashboard },
   { to: '/customers', label: 'العملاء', icon: Users },
-  { to: '/licenses', label: 'التراخيص', icon: KeyRound },
-  { to: '/features', label: 'الميزات والأقسام', icon: SlidersHorizontal },
+  { to: '/licenses', label: 'إصدار المفاتيح', icon: KeyRound },
   { to: '/notifications', label: 'الإشعارات', icon: BellRing },
   { to: '/support', label: 'الدعم', icon: Headset },
   { to: '/content', label: '«حول» والتحديثات', icon: Info },
-  { to: '/bot', label: 'البوت', icon: Bot },
   { to: '/audit', label: 'سجل التدقيق', icon: ScrollText },
   { to: '/settings', label: 'الإعدادات', icon: Settings },
 ] as const

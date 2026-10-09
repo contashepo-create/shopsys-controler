@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 
 /* ─── Toasts ─── */
 
@@ -156,10 +156,18 @@ export function Modal(props: {
   children: ReactNode
   actions?: ReactNode
   wide?: boolean
+  /** false لنوافذ فيها إدخال: النقر خارجها لا يغلقها (كان يضيّع ما كُتب). الافتراضي true */
+  dismissible?: boolean
 }) {
+  // نغلق فقط إن بدأ الضغط وانتهى على الخلفية نفسها — سحب تحديد نص من داخل النافذة
+  // وإفلات الماوس خارجها كان يُحسب «نقرة على الخلفية» فيغلقها
+  const downOnBackdrop = useRef(false)
   if (!props.open) return null
+  const dismissible = props.dismissible ?? true
   return (
-    <div className="modal-backdrop" onClick={props.onClose}>
+    <div className="modal-backdrop"
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget }}
+      onClick={(e) => { if (dismissible && downOnBackdrop.current && e.target === e.currentTarget) props.onClose(); downOnBackdrop.current = false }}>
       <div className="modal" style={props.wide ? { inlineSize: 'min(820px, 100%)' } : undefined} onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">{props.title}</div>
         {props.sub ? <div className="modal-sub">{props.sub}</div> : null}

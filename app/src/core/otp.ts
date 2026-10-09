@@ -15,11 +15,22 @@ export interface PendingOtp {
   attempts: number
 }
 
-export function generateOtpCode(): string {
-  const bytes = new Uint8Array(OTP_LENGTH)
-  crypto.getRandomValues(bytes)
+/**
+ * رقم عشري منتظم التوزيع: «بايت % 10» منحاز (256 لا تقبل القسمة على 10 ⇒ الأرقام 0–5 أرجح)،
+ * فنرفض البايتات ≥ 250 ونعيد السحب (rejection sampling).
+ * (الرمز الفعلي لاستعادة كلمة المرور يولّده desktop/auth.cjs بـ crypto.randomInt.)
+ */
+export function generateOtpCode(random: (buf: Uint8Array<ArrayBuffer>) => void = (b) => { crypto.getRandomValues(b) }): string {
   let code = ''
-  for (let i = 0; i < OTP_LENGTH; i++) code += String(bytes[i] % 10)
+  const buf = new Uint8Array(16)
+  while (code.length < OTP_LENGTH) {
+    random(buf)
+    for (const b of buf) {
+      if (b >= 250) continue
+      code += String(b % 10)
+      if (code.length === OTP_LENGTH) break
+    }
+  }
   return code
 }
 
@@ -53,6 +64,6 @@ export function buildOtpMessage(appName: string, code: string, purposeAr: string
     '',
     code,
     '',
-    `صالح لمدة ${Math.round(OTP_TTL_MS / 60000)} دقائق — لا تشاركه مع anyone.`,
+    `صالح لمدة ${Math.round(OTP_TTL_MS / 60000)} دقائق — لا تشاركه مع أي أحد.`,
   ].join('\n')
 }

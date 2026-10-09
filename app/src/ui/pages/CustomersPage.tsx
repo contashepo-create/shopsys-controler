@@ -1,59 +1,80 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useDataStore } from '../../stores/data.store.ts'
-import { deactivateCustomer, issueForKey } from '../../data/customerActions.ts'
-import { filterCustomers, sortCustomers, STATUS_LABELS_AR, type CustomerStatus, type CustomerView, type CustomerSortKey } from '../../core/customers.ts'
-import { PLAN_LABELS_AR, LICENSE_FEATURES, FEATURE_LABELS_AR, MODULE_LABELS_AR, EXTRA_MODULES, type LicensePlan } from '../../core/license.ts'
-import { DEFAULT_BINDING } from '../../core/settings.ts'
-import { Btn, Modal, useToast, EmptyState, Field, Select } from '../components/ui.tsx'
+import { deactivateCustomer } from '../../data/customerActions.ts'
+import { readCloudFlags, sendKeyToCustomer, setCloudFlag } from '../../data/actions.ts'
+import { filterCustomers, isValidPlan, sortCustomers, STATUS_LABELS_AR, type CustomerStatus, type CustomerView, type CustomerSortKey } from '../../core/customers.ts'
+import { PLAN_LABELS_AR, FEATURE_LABELS_AR, MODULE_LABELS_AR, LICENSE_FEATURES, type LicensePlan, type LicenseFeature } from '../../core/license.ts'
+import { activityDisplay, activityLabel, modulesIncludedInActivity, resolveClientActivity } from '../../core/activities.ts'
+import { totalBranches, totalUsers } from '../../core/issueForm.ts'
+import { Btn, Modal, useToast, EmptyState, Badge, ConfirmDialog } from '../components/ui.tsx'
 import { StatusBadge } from './DashboardPage.tsx'
-import { LicenseKeyResult } from '../components/LicenseKeyResult.tsx'
+import { IssueForm, ActivationExplainer } from '../components/IssueForm.tsx'
 
 const STATUS_OPTIONS: { value: CustomerStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'كل الحالات' },
   { value: 'active', label: 'نشط' },
   { value: 'expiring', label: 'قرب الانتهاء' },
   { value: 'expired', label: 'منتهٍ' },
-  { value: 'revoked', label: 'محروق' },
+  { value: 'revoked', label: 'معطّل (محروق)' },
+  { value: 'none', label: 'بدون اشتراك' },
 ]
 
-const PLAN_OPTIONS = (Object.keys(PLAN_LABELS_AR) as LicensePlan[]).map((p) => ({ value: p, label: PLAN_LABELS_AR[p] }))
+const needsActivation = (c: CustomerView) => c.status === 'revoked' || c.status === 'expired' || c.status === 'none'
+const fmtTime = (iso: string | null) => (iso ? iso.slice(0, 16).replace('T', ' ') : '—')
 
 export function CustomersPage() {
   const toast = useToast()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const { customers, refresh, loading } = useDataStore()
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<CustomerStatus | 'all'>('all')
   const [sortKey, setSortKey] = useState<CustomerSortKey>('customer')
-  const [selected, setSelected] = useState<CustomerView | null>(null)
-  const [renewOpen, setRenewOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [issueOpen, setIssueOpen] = useState(false)
+  /** فُتح الإصدار من زر الصف مباشرة؟ عندها الإغلاق يعيدك للقائمة لا لبطاقة العميل */
+  const [issueFromRow, setIssueFromRow] = useState(false)
+  const [confirmDeactivate, setConfirmDeactivate] = useState<CustomerView | null>(null)
   const [busy, setBusy] = useState(false)
-
-  const focusDevice = params.get('focus')
 
   useEffect(() => { void refresh() }, [refresh])
 
-  // keep the open card in sync with fresh data
+  // فتح بطاقة العميل مباشرة عند القدوم من لوحة التحكم (?focus=<deviceId>)
+  const focusDevice = params.get('focus')
   useEffect(() => {
-    if (selected) {
-      const fresh = customers.find((c) => c.deviceId === selected.deviceId)
-      if (fresh && fresh !== selected) setSelected(fresh)
+    if (focusDevice && customers.some((c) => c.deviceId === focusDevice)) {
+      setSelectedId(focusDevice)
+      setParams({}, { replace: true })
     }
-  }, [customers, selected])
+  }, [focusDevice, customers, setParams])
 
-  const list = useMemo(() => sortCustomers(filterCustomers(customers, q, status), sortKey), [customers, q, status, sortKey])
+  const selected = useMemo(() => customers.find((c) => c.deviceId === selectedId) ?? null, [customers, selectedId])
+  const list = useMemo(() => sortCustomers(filterCustomers(customers, q, status), sortKey, sortKey === 'lastActivityAt' ? 'desc' : 'asc'), [customers, q, status, sortKey])
 
   async function doDeactivate(c: CustomerView) {
+    setConfirmDeactivate(null)
     setBusy(true)
     try {
-      await deactivateCustomer(c)
-      toast('تم تعطيل العميل — سيُرفض المفتاح عند أول مزامنة', 'ok')
+      const { notes } = await deactivateCustomer(c)
+      toast('تم تعطيل العميل — يُرفض مفتاحه عند أول مزامنة', 'ok')
+      for (const n of notes) toast(n, 'info')
       await refresh()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')
     }
     setBusy(false)
+  }
+
+  function openIssue(c: CustomerView) {
+    setSelectedId(c.deviceId)
+    setIssueFromRow(true)
+    setIssueOpen(true)
+  }
+
+  function closeIssue() {
+    setIssueOpen(false)
+    if (issueFromRow) setSelectedId(null)
+    setIssueFromRow(false)
   }
 
   return (
@@ -67,28 +88,16 @@ export function CustomersPage() {
           <select className="select" style={{ inlineSize: 165 }} value={sortKey} onChange={(e) => setSortKey(e.target.value as CustomerSortKey)}>
             <option value="customer">ترتيب: الاسم</option>
             <option value="expiresAt">ترتيب: الانتهاء</option>
-            <option value="lastActivityAt">ترتيب: آخر نشاط</option>
+            <option value="lastActivityAt">ترتيب: آخر حدث</option>
             <option value="status">ترتيب: الحالة</option>
           </select>
-          <Btn onClick={() => void refresh()} disabled={loading}>{loading ? '…' : 'تحديث'}</Btn>
+          <Link className="btn btn-primary" to="/licenses">➕ عميل جديد</Link>
         </div>
       </div>
 
-      {focusDevice ? (
-        <div className="card" style={{ marginBlockEnd: 14, borderColor: 'var(--accent)' }}>
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <div>
-              <b>تركيز على الجهاز</b>
-              <div className="mono muted">{focusDevice}</div>
-            </div>
-            <Btn kind="primary" onClick={() => { const c = customers.find((x) => x.deviceId === focusDevice); if (c) setSelected(c) }}>فتح البطاقة</Btn>
-          </div>
-        </div>
-      ) : null}
-
       {list.length === 0 ? (
         <div className="card">
-          <EmptyState icon="👥" text={loading ? 'جارٍ التحميل…' : 'لا يوجد عملاء مطابقون'} hint="البيانات تُقرأ مباشرة من Cloudflare KV" />
+          <EmptyState icon="👥" text={loading ? 'جارٍ التحميل…' : 'لا يوجد عملاء مطابقون'} />
         </div>
       ) : (
         <div className="table-wrap">
@@ -96,39 +105,30 @@ export function CustomersPage() {
             <thead>
               <tr>
                 <th>العميل</th>
-                <th>الجهاز</th>
                 <th>النشاط</th>
                 <th>الباقة</th>
                 <th>الانتهاء</th>
                 <th>آخر ظهور</th>
-                <th>آخر دعم</th>
                 <th>الحالة</th>
                 <th>إجراءات</th>
               </tr>
             </thead>
             <tbody>
               {list.map((c) => (
-                <tr key={c.deviceId} className="clickable" onClick={() => setSelected(c)}>
+                <tr key={c.deviceId} className="clickable" onClick={() => setSelectedId(c.deviceId)}>
                   <td>
                     <div style={{ fontWeight: 700 }}>{c.customer || '—'}</div>
-                    {c.email ? <div className="muted" style={{ fontSize: 12 }}>{c.email}</div> : null}
+                    <div className="mono muted" style={{ fontSize: 11.5 }}>{c.deviceId}</div>
                   </td>
-                  <td className="mono">{c.deviceId}</td>
-                  <td>{c.activityId ?? '—'}</td>
-                  <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? c.plan ?? '—'}</td>
-                  <td className="mono">{c.expiresAt ?? 'مدى الحياة'}</td>
-                  <td className="muted">{c.lastActivityAt ?? '—'}</td>
-                  <td className="muted">{c.lastSupportAt ? c.lastSupportAt.slice(0, 16).replace('T', ' ') : '—'}</td>
+                  <td>{activityLabel(c.clientActivityId ?? c.activityId)}</td>
+                  <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? (c.plan || '—')}</td>
+                  <td className="mono">{c.plan ? (c.expiresAt ?? 'مدى الحياة') : '—'}</td>
+                  <td className="muted">{fmtTime(c.lastSeenAt ?? c.lastActivityAt)}</td>
                   <td><StatusBadge status={c.status} /></td>
                   <td onClick={(e) => e.stopPropagation()}>
-                    <div className="row">
-                      <Btn size="sm" onClick={() => setSelected(c)}>تفاصيل</Btn>
-                      {c.status !== 'revoked' ? (
-                        <Btn size="sm" kind="danger" disabled={busy} onClick={() => void doDeactivate(c)}>تعطيل</Btn>
-                      ) : (
-                        <Btn size="sm" kind="primary" onClick={() => { setSelected(c); setRenewOpen(true) }}>تنشيط</Btn>
-                      )}
-                    </div>
+                    {needsActivation(c)
+                      ? <Btn size="sm" kind="primary" onClick={() => openIssue(c)}>✅ تنشيط</Btn>
+                      : <Btn size="sm" onClick={() => openIssue(c)}>✏️ تعديل</Btn>}
                   </td>
                 </tr>
               ))}
@@ -137,165 +137,203 @@ export function CustomersPage() {
         </div>
       )}
 
-      <Modal
-        open={selected != null}
-        wide
-        title={selected ? `بطاقة العميل — ${selected.customer || selected.deviceId}` : ''}
-        sub={selected ? `الحالة: ${STATUS_LABELS_AR[selected.status]} · آخر ظهور: ${selected.lastActivityAt ?? '—'}` : ''}
-        onClose={() => setSelected(null)}
-        actions={
-          selected ? (
-            <>
-              <Btn onClick={() => setSelected(null)}>إغلاق</Btn>
-              <Btn kind="primary" onClick={() => setRenewOpen(true)}>
-                {selected.status === 'revoked' || selected.status === 'expired' || selected.status === 'none' ? '✅ إعادة التنشيط' : '🔁 تجديد وتعديل'}
-              </Btn>
-              {selected.status !== 'revoked' ? (
-                <Btn kind="danger" disabled={busy} onClick={() => void doDeactivate(selected)}>🔥 تعطيل (حرق)</Btn>
-              ) : null}
-            </>
-          ) : null
-        }
-      >
-        {selected ? (
-          <>
-            <div className="grid-2">
-              <div className="card">
-                <div className="card-title">بيانات الاشتراك</div>
-                <ul className="plain" style={{ fontSize: 13.5 }}>
-                  <li>الباقة: <b>{PLAN_LABELS_AR[selected.plan as LicensePlan] ?? selected.plan ?? '—'}</b></li>
-                  <li>الانتهاء: <span className="mono">{selected.expiresAt ?? 'مدى الحياة'}</span></li>
-                  <li>البصمة: <span className="mono">{selected.fingerprint ?? '—'}</span></li>
-                  <li>مستخدمون إضافيون: {selected.extraUsers} · فروع إضافية: {selected.extraBranches}</li>
-                  <li>رسالة العميل: {selected.message || '—'}</li>
-                </ul>
-              </div>
-              <div className="card">
-                <div className="card-title">الميزات الممنوحة</div>
-                {selected.features.length === 0 ? <span className="muted">لا ميزات ممنوحة</span> : (
-                  <ul className="plain" style={{ fontSize: 13.5 }}>
-                    {selected.features.map((f) => <li key={f}>{FEATURE_LABELS_AR[f] ?? f}</li>)}
-                  </ul>
-                )}
-                <div className="section-title" style={{ marginBlockStart: 12 }}>أقسام إضافية</div>
-                {selected.extraModules.length === 0 ? <span className="muted">لا أقسام إضافية</span> : (
-                  <ul className="plain" style={{ fontSize: 13.5 }}>
-                    {selected.extraModules.map((m) => <li key={m}>{MODULE_LABELS_AR[m] ?? m}</li>)}
-                  </ul>
-                )}
-              </div>
-            </div>
-            <div className="muted" style={{ fontSize: 12.5, marginBlockStart: 10 }}>
-              ℹ️ لتغيير الميزات أو الأقسام: «تجديد وتعديل» يصدر <b>مفتاحاً جديداً</b> — نفس قاعدة البوت
-              (التغييرات تسري بمفتاح جديد). التعطيل يتم برفض المفتاح عند أول مزامنة للعميل.
-            </div>
-          </>
-        ) : null}
-      </Modal>
+      {selected && !issueOpen ? (
+        <CustomerCard
+          customer={selected}
+          busy={busy}
+          onClose={() => setSelectedId(null)}
+          onIssue={() => { setIssueFromRow(false); setIssueOpen(true) }}
+          onDeactivate={() => setConfirmDeactivate(selected)}
+        />
+      ) : null}
 
       {selected ? (
         <IssueDialog
-          open={renewOpen}
+          key={`${selected.deviceId}:${issueOpen}`}
+          open={issueOpen}
           customer={selected}
-          onClose={() => setRenewOpen(false)}
-          onDone={async () => { setRenewOpen(false); await refresh() }}
+          onClose={closeIssue}
+          onDone={async () => { await refresh() }}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={confirmDeactivate != null}
+        title="تعطيل العميل"
+        message={`سيُحرق المفتاح الحالي لـ «${confirmDeactivate?.customer || confirmDeactivate?.deviceId || ''}» ويتوقف برنامجه عند أول مزامنة. يمكنك تنشيطه لاحقاً بمفتاح جديد.`}
+        confirmText="🔥 تعطيل"
+        danger
+        onCancel={() => setConfirmDeactivate(null)}
+        onConfirm={() => { if (confirmDeactivate) void doDeactivate(confirmDeactivate) }}
+      />
     </>
   )
 }
 
-/** Issue / renew for an existing device — prefilled from the customer view. */
+/** بطاقة العميل — كل شيء عن العميل في مكان واحد: الاشتراك، المفتاح الحالي، الميزات والأقسام، الإطفاء المؤقت. */
+function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: () => void; onIssue: () => void; onDeactivate: () => void }) {
+  const toast = useToast()
+  const c = props.customer
+  const servicesAvailable = useDataStore((s) => s.servicesAvailable)
+  const [flags, setFlags] = useState<{ disabledFeatures: string[]; noteAr: string }>({ disabledFeatures: [], noteAr: '' })
+  const [flagsError, setFlagsError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const activity = resolveClientActivity(c).id
+  const included = modulesIncludedInActivity(activity)
+  // ما يضيفه المفتاح فوق النشاط فقط — بلا تكرار لقسم مشمول أصلاً
+  const extraOnly = c.extraModules.filter((m, i, a) => !included.includes(m) && a.indexOf(m) === i)
+
+  useEffect(() => {
+    if (!servicesAvailable) return
+    let cancelled = false
+    setFlagsError('')
+    void readCloudFlags(c.deviceId).then((f) => { if (!cancelled) setFlags(f) }).catch((e: unknown) => {
+      // لا نبتلع الخطأ: بدونه تظهر كل الميزات «شغّالة» وهي قد تكون مطفأة
+      if (!cancelled) setFlagsError(e instanceof Error ? e.message : String(e))
+    })
+    return () => { cancelled = true }
+  }, [c.deviceId, servicesAvailable])
+
+  async function toggleFlag(f: LicenseFeature, disable: boolean) {
+    setBusy(true)
+    try {
+      await setCloudFlag(c.deviceId, f, disable, disable ? 'تعطيل مؤقت من اللوحة' : '')
+      setFlags(await readCloudFlags(c.deviceId))
+      setFlagsError('')
+      toast(disable ? `🔴 أُطفئت «${FEATURE_LABELS_AR[f]}» مؤقتاً` : `🟢 أُعيد تشغيل «${FEATURE_LABELS_AR[f]}»`, 'ok')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  async function copyKey() {
+    if (!c.licenseKey) return
+    try {
+      await navigator.clipboard.writeText(c.licenseKey)
+      toast('تم نسخ المفتاح ✓', 'ok')
+    } catch {
+      toast('تعذر النسخ — حدد المفتاح الظاهر وانسخه يدوياً', 'error')
+    }
+  }
+
+  async function sendKey() {
+    if (!c.licenseKey || !c.fingerprint) return
+    setBusy(true)
+    try {
+      await sendKeyToCustomer({ deviceId: c.deviceId, customer: c.customer, key: c.licenseKey, fingerprint: c.fingerprint })
+      toast('📨 وصل المفتاح إلى إشعارات تطبيق العميل', 'ok')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  const plan = (c.plan || 'trial') as LicensePlan
+  const knownPlan = isValidPlan(plan)
+
+  return (
+    <Modal
+      open
+      wide
+      title={c.customer || c.deviceId}
+      sub={`${c.deviceId} · ${STATUS_LABELS_AR[c.status]}`}
+      onClose={props.onClose}
+      actions={
+        <>
+          {c.status !== 'revoked' && c.fingerprint ? <Btn kind="danger" disabled={props.busy} onClick={props.onDeactivate}>🔥 تعطيل</Btn> : null}
+          <div className="spacer" />
+          <Btn onClick={props.onClose}>إغلاق</Btn>
+          <Btn kind="primary" onClick={props.onIssue}>{needsActivation(c) ? '✅ تنشيط العميل' : '✏️ تعديل / إضافة قسم أو ميزة'}</Btn>
+        </>
+      }
+    >
+      <div className="grid-2" style={{ alignItems: 'start' }}>
+        <div className="card">
+          <div className="card-title">الاشتراك</div>
+          <ul className="plain" style={{ fontSize: 13.5 }}>
+            <li>الباقة: <b>{PLAN_LABELS_AR[plan] ?? (c.plan || '—')}</b> · ينتهي: <span className="mono">{c.plan ? (c.expiresAt ?? 'مدى الحياة') : '—'}</span></li>
+            <li>النشاط: <b>{activityDisplay(c.clientActivityId ?? c.activityId)}</b>
+              {c.clientActivityId && c.activityId && c.clientActivityId !== c.activityId ? <span className="muted"> (المفتاح: {activityLabel(c.activityId)})</span> : null}</li>
+            {knownPlan ? <li>الفروع: {totalBranches(plan, c.extraBranches)} (منها {c.extraBranches} إضافي) · المستخدمون: {totalUsers(plan, c.extraUsers)}</li> : null}
+            <li>آخر ظهور: {fmtTime(c.lastSeenAt)} · آخر حدث: {c.lastActivityAt ?? '—'}</li>
+            {c.email ? <li>البريد: {c.email}</li> : null}
+            {c.message ? <li>رسالة على حسابه: {c.message}</li> : null}
+          </ul>
+        </div>
+
+        <div className="card">
+          <div className="card-title">الميزات والأقسام</div>
+          <div className="row" style={{ marginBlockEnd: 8 }}>
+            {c.features.length === 0 ? <span className="muted">لا ميزات</span> : c.features.map((f) => (
+              <Badge key={f} kind={flags.disabledFeatures.includes(f) ? 'danger' : 'accent'}>
+                {FEATURE_LABELS_AR[f] ?? f}{flags.disabledFeatures.includes(f) ? ' (مطفأة)' : ''}
+              </Badge>
+            ))}
+          </div>
+          <div className="row">
+            {included.map((m) => <Badge key={m} kind="muted">{MODULE_LABELS_AR[m] ?? m} · ضمن النشاط</Badge>)}
+            {extraOnly.map((m) => <Badge key={m} kind="ok">{MODULE_LABELS_AR[m] ?? m} · إضافي</Badge>)}
+            {included.length === 0 && extraOnly.length === 0 ? <span className="muted">لا أقسام إضافية</span> : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBlockStart: 12 }}>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <div className="card-title" style={{ margin: 0 }}>🔑 المفتاح الحالي</div>
+          {c.licenseKey ? (
+            <div className="row">
+              <span className="muted" style={{ fontSize: 12 }}>صدر {c.licenseIssuedAt ?? '—'} · بصمة <span className="mono">{c.fingerprint}</span></span>
+              <Btn size="sm" onClick={() => void copyKey()}>نسخ</Btn>
+              <Btn size="sm" kind="primary" disabled={busy || c.status === 'revoked' || c.status === 'expired'} title={c.status === 'expired' ? 'المفتاح منتهٍ — جدّد أولاً' : undefined} onClick={() => void sendKey()}>📨 إرسال للعميل</Btn>
+            </div>
+          ) : null}
+        </div>
+        {c.licenseKey ? (
+          <div className="mono muted" style={{ wordBreak: 'break-all', fontSize: 11.5, marginBlockStart: 8 }}>{c.licenseKey}</div>
+        ) : <div className="muted" style={{ marginBlockStart: 8 }}>لا يوجد مفتاح لهذا الجهاز بعد.</div>}
+        <ActivationExplainer />
+      </div>
+
+      {c.features.length > 0 ? (
+        <div className="card" style={{ marginBlockStart: 12 }}>
+          <div className="card-title">⚡ إطفاء مؤقت لميزة (بدون مفتاح جديد)</div>
+          {!servicesAvailable ? (
+            <div className="muted" style={{ fontSize: 12.5 }}>يحتاج مساحة الخدمات — <Link to="/settings">اضبطها من الإعدادات</Link>.</div>
+          ) : (
+            <>
+              {flagsError ? <div style={{ color: 'var(--danger)', fontSize: 12.5, marginBlockEnd: 8 }}>⚠️ تعذر قراءة حالة الإطفاء الحالية — {flagsError}. الأزرار قد لا تعكس الواقع.</div> : null}
+              <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 8 }}>مناسب لتأخر السداد مثلاً — يُطفئ الميزة من السحابة ويعيدها بنقرة.</div>
+              {LICENSE_FEATURES.filter((f) => c.features.includes(f)).map((f) => {
+                const off = flags.disabledFeatures.includes(f)
+                return (
+                  <div key={f} className="check-row">
+                    <span style={{ flex: 1 }}>{FEATURE_LABELS_AR[f]}{off ? <span className="check-desc"> — مطفأة حالياً</span> : null}</span>
+                    {off
+                      ? <Btn size="sm" kind="primary" disabled={busy} onClick={() => void toggleFlag(f, false)}>إعادة تشغيل</Btn>
+                      : <Btn size="sm" kind="danger" disabled={busy} onClick={() => void toggleFlag(f, true)}>إطفاء</Btn>}
+                  </div>
+                )
+              })}
+            </>
+          )}
+        </div>
+      ) : null}
+    </Modal>
+  )
+}
+
+/** تنشيط / تجديد / تعديل عميل موجود — نفس نموذج الإصدار الموحّد معبّأً من اشتراكه. */
 export function IssueDialog(props: {
   open: boolean
   customer: CustomerView
   onClose: () => void
   onDone: () => Promise<void>
 }) {
-  const toast = useToast()
   const c = props.customer
-  const [customerName, setCustomerName] = useState(c.customer)
-  const [plan, setPlan] = useState<LicensePlan>((c.plan as LicensePlan) || 'basic')
-  const [days, setDays] = useState('365')
-  const [activityId, setActivityId] = useState(c.activityId ?? '')
-  const [extraUsers, setExtraUsers] = useState(c.extraUsers ? String(c.extraUsers) : '')
-  const [extraBranches, setExtraBranches] = useState(c.extraBranches ? String(c.extraBranches) : '')
-  const [features, setFeatures] = useState<string[]>([...c.features])
-  const [modules, setModules] = useState<string[]>([...c.extraModules])
-  const [busy, setBusy] = useState(false)
-  const [issued, setIssued] = useState<{ key: string; fingerprint: string } | null>(null)
-
-  const toggle = (list: string[], set: (v: string[]) => void, value: string) =>
-    set(list.includes(value) ? list.filter((x) => x !== value) : [...list, value])
-
-  async function submit() {
-    setBusy(true)
-    try {
-      const res = await issueForKey({
-        deviceId: c.deviceId,
-        customer: customerName.trim() || c.customer,
-        plan,
-        days: Number(days) || 365,
-        activityId: activityId.trim() || undefined,
-        extraUsers: Number(extraUsers) || 0,
-        extraBranches: Number(extraBranches) || 0,
-        features: features as never,
-        extraModules: modules,
-      })
-      setIssued({ key: res.key, fingerprint: res.fingerprint })
-      if (res.notes?.length) toast(res.notes[0], 'info')
-      else toast('تم إصدار المفتاح ورفعه إلى Cloudflare ✓', 'ok')
-      await props.onDone()
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error')
-    }
-    setBusy(false)
-  }
-
-  if (issued) {
-    return (
-      <Modal open={props.open} title="مفتاح التفعيل الجديد" sub={c.customer || c.deviceId} onClose={props.onClose}
-        actions={<Btn kind="primary" onClick={props.onClose}>تم</Btn>}>
-        <LicenseKeyResult licenseKey={issued.key} fingerprint={issued.fingerprint} onCopy={() => toast('تم نسخ المفتاح ✓', 'ok')} />
-      </Modal>
-    )
-  }
-
   return (
-    <Modal open={props.open} wide title="تجديد وتعديل الاشتراك" sub={c.deviceId} onClose={props.onClose}
-      actions={
-        <>
-          <Btn onClick={props.onClose}>إلغاء</Btn>
-          <Btn kind="primary" disabled={busy} onClick={() => void submit()}>{busy ? 'جارٍ التوقيع…' : 'إصدار المفتاح الجديد'}</Btn>
-        </>
-      }>
-      <div className="grid-2">
-        <Field label="اسم العميل" value={customerName} onChange={setCustomerName} />
-        <Select label="الخطة" value={plan} onChange={(v) => setPlan(v as LicensePlan)} options={PLAN_OPTIONS} />
-        <Field label="مدة الاشتراك (أيام)" value={days} onChange={setDays} dir="ltr" hint="0 أو مدى الحياة باختيار الخطة «مدى الحياة»" />
-        <Field label="النشاط (activityId)" value={activityId} onChange={setActivityId} dir="ltr" placeholder="grocery / pharmacy …" />
-        <Field label="مستخدمون إضافيون (+)" value={extraUsers} onChange={setExtraUsers} dir="ltr" />
-        <Field label="فروع إضافية (+)" value={extraBranches} onChange={setExtraBranches} dir="ltr" />
-      </div>
-      <div className="section-title">الميزات</div>
-      {LICENSE_FEATURES.map((f) => (
-        <label key={f} className="check-row">
-          <input type="checkbox" checked={features.includes(f)} onChange={() => toggle(features, setFeatures, f)} />
-          <span>{FEATURE_LABELS_AR[f]}<span className="check-desc"> — {f}</span></span>
-        </label>
-      ))}
-      <div className="section-title">أقسام إضافية (extraModules)</div>
-      {EXTRA_MODULES.map((m) => (
-        <label key={m} className="check-row">
-          <input type="checkbox" checked={modules.includes(m)} onChange={() => toggle(modules, setModules, m)} />
-          <span>{MODULE_LABELS_AR[m] ?? m}<span className="check-desc"> — {m}</span></span>
-        </label>
-      ))}
-      <div className="muted" style={{ fontSize: 12.5, marginBlockStart: 8 }}>
-        ستُكتب السجلات في: <span className="mono">lic:&lt;fingerprint&gt;</span> و<span className="mono">dev:{c.deviceId}</span> و
-        <span className="mono">log:{c.deviceId}</span> — ونسخة الاشتراك في <span className="mono">sub:</span> بخدمات التطبيق.
-        الجهة: <span className="mono">{DEFAULT_BINDING.licenseWorkerUrl}</span>
-      </div>
+    <Modal open={props.open} wide dismissible={false}
+      title={needsActivation(c) ? `تنشيط العميل — ${c.customer || c.deviceId}` : `تعديل اشتراك — ${c.customer || c.deviceId}`}
+      sub="المفتاح الجديد يحلّ محل القديم ويحمل كل الأقسام والميزات"
+      onClose={props.onClose}>
+      <IssueForm customer={c} onIssued={async () => { await props.onDone() }} onClose={props.onClose} />
     </Modal>
   )
 }

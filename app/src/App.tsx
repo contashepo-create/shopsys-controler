@@ -9,11 +9,9 @@ import { LockPage } from './ui/pages/LockPage.tsx'
 import { DashboardPage } from './ui/pages/DashboardPage.tsx'
 import { CustomersPage } from './ui/pages/CustomersPage.tsx'
 import { LicensesPage } from './ui/pages/LicensesPage.tsx'
-import { FeaturesPage } from './ui/pages/FeaturesPage.tsx'
 import { NotificationsPage } from './ui/pages/NotificationsPage.tsx'
 import { SupportPage } from './ui/pages/SupportPage.tsx'
 import { ContentPage } from './ui/pages/ContentPage.tsx'
-import { BotPage } from './ui/pages/BotPage.tsx'
 import { AuditPage } from './ui/pages/AuditPage.tsx'
 import { SettingsPage } from './ui/pages/SettingsPage.tsx'
 import { useConfigStore } from './stores/config.store.ts'
@@ -25,11 +23,11 @@ function Guarded() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/licenses" element={<LicensesPage />} />
-        <Route path="/features" element={<FeaturesPage />} />
+        <Route path="/features" element={<Navigate to="/customers" replace />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/support" element={<SupportPage />} />
         <Route path="/content" element={<ContentPage />} />
-        <Route path="/bot" element={<BotPage />} />
+        <Route path="/bot" element={<Navigate to="/settings" replace />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

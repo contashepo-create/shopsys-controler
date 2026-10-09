@@ -27,7 +27,9 @@ export const useSessionStore = create<SessionState>((set) => ({
   init: async () => {
     try {
       const [complete, profile] = await Promise.all([bridge.setup.isComplete(), bridge.profile.get()])
-      if (!complete.hasProfile || !complete.hasPassword) {
+      // الإعداد فقط عند غياب كلمة المرور: لو وُجدت كلمة مرور بلا ملف حساب (حُذف مثلاً) فالقفل أولاً —
+      // العملية الرئيسية ترفض تعيين كلمة مرور جديدة واللوحة مقفلة، والحساب يُكمل من الإعدادات بعد الدخول
+      if (!complete.hasPassword) {
         set({ status: 'setup', profile })
         return
       }
@@ -38,7 +40,11 @@ export const useSessionStore = create<SessionState>((set) => ({
   },
 
   unlock: () => set({ status: 'unlocked' }),
-  lock: () => set({ status: 'locked' }),
+  lock: () => {
+    // العملية الرئيسية تقفل أيضاً: التوقيع والأسرار وCloudflare تُرفض حتى إدخال كلمة المرور
+    void bridge.auth.lock().catch(() => {})
+    set({ status: 'locked' })
+  },
   setProfile: (p) => set({ profile: p }),
   setTheme: (t) => {
     try { localStorage.setItem(THEME_KEY, t) } catch { /* ignore */ }

@@ -30,7 +30,10 @@ export function parseChat(raw: string | null): ChatMessage[] {
   try {
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
-    return arr.filter((m) => m && typeof m.id === 'number' && (m.from === 'client' || m.from === 'developer') && typeof m.text === 'string') as ChatMessage[]
+    return arr
+      .filter((m) => m && typeof m.id === 'number' && (m.from === 'client' || m.from === 'developer') && typeof m.text === 'string')
+      // at بنوع غير نصي كان يُسقط صفحة الدعم عند ‎.slice‎
+      .map((m) => ({ ...m, at: typeof m.at === 'string' ? m.at : '' })) as ChatMessage[]
   } catch {
     return []
   }
@@ -41,11 +44,22 @@ export function parseChat(raw: string | null): ChatMessage[] {
  * when IT pushes; direct KV writes must do the same) and keeps the last 200.
  */
 export function appendChatMessage(raw: string | null, from: ChatFrom, text: string, nowIso = new Date().toISOString()): string {
-  const chat = parseChat(raw)
-  const id = chat.length ? Math.max(...chat.map((m) => m.id || 0)) + 1 : 1
-  chat.push({ id, from, text: cleanSupportText(text), at: nowIso })
-  const trimmed = chat.length > CHAT_KEEP ? chat.slice(chat.length - CHAT_KEEP) : chat
-  return JSON.stringify(trimmed)
+  // نُلحق بالمصفوفة الخام كما هي: البناء من parseChat (المرشَّح) كان يحذف بصمت أي رسالة بشكل
+  // لا نعرفه (حقل إضافي من إصدار أحدث للتطبيق، id نصي…) عند كل رد من اللوحة.
+  let arr: unknown[] = []
+  if (raw) {
+    let parsed: unknown
+    try { parsed = JSON.parse(raw) } catch { parsed = undefined }
+    if (!Array.isArray(parsed)) throw new Error('محادثة العميل محفوظة بصيغة غير متوقعة — لم يُكتب الرد حتى لا تُستبدل')
+    arr = parsed
+  }
+  let maxId = 0
+  for (const m of arr) {
+    const id = m && typeof m === 'object' ? (m as { id?: unknown }).id : undefined
+    if (typeof id === 'number' && Number.isFinite(id) && id > maxId) maxId = id
+  }
+  arr.push({ id: Math.floor(maxId) + 1, from, text: cleanSupportText(text), at: nowIso })
+  return JSON.stringify(arr.length > CHAT_KEEP ? arr.slice(arr.length - CHAT_KEEP) : arr)
 }
 
 export function lastMessageAt(chat: readonly ChatMessage[]): string | null {

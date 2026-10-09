@@ -5,8 +5,8 @@
  */
 
 import { bridge } from './bridge.ts'
-import { issueLicense, revokeLicense, type IssueLicenseInput, type IssueLicenseResult } from './actions.ts'
-import { appendDeviceLogEntry, type CustomerView } from '../core/customers.ts'
+import { appendLog, audit, issueLicense, readForUpdate, revokeLicense, type IssueLicenseInput, type IssueLicenseResult } from './actions.ts'
+import type { CustomerView } from '../core/customers.ts'
 import type { LicenseFeature, LicensePlan } from '../core/license.ts'
 
 export interface QuickIssueInput {
@@ -34,22 +34,26 @@ export async function planAndRenewCustomer(input: QuickIssueInput): Promise<Issu
 /**
  * Deactivate a customer: burn the current fingerprint (both namespaces) and
  * mark the device record. The app refuses the key after its next sync.
+ * يعيد ملاحظات غير حاجبة (مثل غياب مساحة الخدمات).
  */
-export async function deactivateCustomer(c: CustomerView): Promise<void> {
+export async function deactivateCustomer(c: CustomerView): Promise<{ notes: string[] }> {
   if (!c.fingerprint) throw new Error('لا توجد بصمة مفتاح لهذا العميل — أعد إصدار مفتاح أولاً')
-  await revokeLicense(c.fingerprint)
-  const logKey = `log:${c.deviceId}`
-  const prev = await bridge.cf.get('license', logKey)
-  await bridge.cf.put('license', logKey, appendDeviceLogEntry(prev.ok ? prev.value : null, 'تعطيل من اللوحة (حرق المفتاح)'))
-  const dev = await bridge.cf.get('license', `dev:${c.deviceId}`)
-  if (dev.ok && dev.value) {
-    try {
-      const o = JSON.parse(dev.value) as Record<string, unknown>
+  const { notes } = await revokeLicense(c.fingerprint)
+  await appendLog(c.deviceId, 'تعطيل من اللوحة (حرق المفتاح)')
+  try {
+    const raw = await readForUpdate('license', `dev:${c.deviceId}`)
+    if (raw) {
+      const o = JSON.parse(raw) as Record<string, unknown>
       o.disabledAt = new Date().toISOString()
       o.message = 'تم إيقاف الاشتراك — تواصل مع المطوّر'
-      await bridge.cf.put('license', `dev:${c.deviceId}`, JSON.stringify(o))
-    } catch { /* keep going */ }
+      const r = await bridge.cf.put('license', `dev:${c.deviceId}`, JSON.stringify(o))
+      if (!r.ok) notes.push('حُرق المفتاح لكن تعذر تعليم سجل الجهاز بالإيقاف')
+    }
+  } catch {
+    notes.push('حُرق المفتاح لكن تعذر تعليم سجل الجهاز بالإيقاف')
   }
+  await audit('customer_deactivate', c.deviceId, { fingerprint: c.fingerprint })
+  return { notes }
 }
 
 /** Issue a key for an existing device (used by the customer card). */

@@ -56,7 +56,7 @@ function namespaceUrl(cfg: KvNamespaceConfig, ns: KvNamespace, key?: string): st
 }
 
 function errorFromStatus(status: number): string {
-  if (status === 401 || status === 403) return 'مفتاح Cloudflare غير صالح أو密度 الصلاحيات'
+  if (status === 401 || status === 403) return 'مفتاح Cloudflare غير صالح أو تنقصه الصلاحيات'
   if (status === 404) return 'الحساب أو namespace غير موجود — تحقق من المعرفات'
   if (status === 429) return 'تجاوزت حد طلبات Cloudflare — حاول بعد لحظات'
   if (status >= 500) return 'تعذر الوصول إلى Cloudflare — تحقق من الاتصال'
