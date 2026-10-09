@@ -48,7 +48,8 @@ export function parseNoticeList(raw: string | null): CloudNotice[] {
  * drop expired, push, keep the last 50.
  */
 export function appendNotice(raw: string | null, notice: CloudNotice, now = new Date()): string {
-  const previous = parseNoticeList(raw).filter((n) => n?.expiresAt && Date.parse(n.expiresAt) > now.getTime())
+  // بلا تاريخ انتهاء = دائم (يبقى)؛ المنتهي أو ذو التاريخ التالف يُنظَّف
+  const previous = parseNoticeList(raw).filter((n) => n != null && (n.expiresAt == null || Date.parse(n.expiresAt) > now.getTime()))
   previous.push(notice)
   return JSON.stringify(previous.slice(-NOTICE_MAX_PER_LIST))
 }
@@ -244,7 +245,10 @@ export function noticeRecipients(
 ): NoticeRecipient[] {
   const byId = new Map(customers.map((c) => [c.deviceId, c]))
   const ids = sent.scope === 'global' ? customers.map((c) => c.deviceId) : sent.deviceIds
-  const since = Date.parse(sent.notice.createdAt)
+  // بعد التعديل لا يُعدّ «وصله» إلا من اتصل بعد آخر تعديل (وإلا فقد رأى النص القديم فقط)
+  const edited = sent.notice.editedAt ? Date.parse(sent.notice.editedAt) : NaN
+  const created = Date.parse(sent.notice.createdAt)
+  const since = Number.isFinite(edited) && edited > created ? edited : created
   return ids.map((deviceId) => {
     const c = byId.get(deviceId)
     const reads = readsByDevice.get(deviceId)

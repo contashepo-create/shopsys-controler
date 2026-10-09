@@ -116,6 +116,39 @@ function cfError(status, body) {
   return detail || `فشل الطلب (${status})`
 }
 
+/**
+ * fetch مع إعادة محاولة لطلبات Cloudflare المتكررة الأمان (قراءة/كتابة/حذف/سرد — كلها idempotent).
+ * 429 (تجاوز الحد) و5xx وانقطاع الشبكة شائعة لحظياً: بدون إعادة يفشل تحديث اللوحة كاملاً
+ * بسبب طلب واحد من مئات. لا نعيد طلبات الإنشاء (POST) حتى لا تتكرر.
+ */
+const CF_RETRIES = 2
+const CF_RETRY_BASE_MS = 400
+function cfRetryDelay(attempt, res) {
+  const ra = res ? Number(res.headers && res.headers.get ? res.headers.get('retry-after') : NaN) : NaN
+  if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, 3000)
+  return CF_RETRY_BASE_MS * 2 ** attempt
+}
+async function cfFetch(url, init, opts) {
+  const retries = opts && Number.isInteger(opts.retries) ? opts.retries : CF_RETRIES
+  const sleep = (opts && opts.sleep) || ((ms) => new Promise((r) => setTimeout(r, ms)))
+  const doFetch = (opts && opts.fetch) || fetch
+  for (let attempt = 0; ; attempt++) {
+    let res
+    try {
+      res = await doFetch(url, init)
+    } catch (e) {
+      if (attempt >= retries) throw e
+      await sleep(cfRetryDelay(attempt, null))
+      continue
+    }
+    if ((res.status === 429 || res.status >= 500) && attempt < retries) {
+      await sleep(cfRetryDelay(attempt, res))
+      continue
+    }
+    return res
+  }
+}
+
 async function handleCfRequest(payload) {
   const { ns, op } = payload || {}
   const cfg = cfConfig()
@@ -141,7 +174,7 @@ async function handleCfRequest(payload) {
       if (payload.prefix) params.set('prefix', String(payload.prefix))
       params.set('limit', '1000')
       if (payload.cursor) params.set('cursor', String(payload.cursor))
-      const res = await fetch(`${base}/keys?${params}`, { headers })
+      const res = await cfFetch(`${base}/keys?${params}`, { headers })
       const text = await res.text()
       if (!res.ok) return { ok: false, error: cfError(res.status, text) }
       const env = JSON.parse(text)
@@ -150,7 +183,7 @@ async function handleCfRequest(payload) {
     }
 
     if (op === 'get') {
-      const res = await fetch(`${base}/values/${encodeURIComponent(payload.key)}`, { headers })
+      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, { headers })
       if (res.status === 404) return { ok: true, value: null }
       const text = await res.text()
       if (!res.ok) return { ok: false, error: cfError(res.status, text) }
@@ -158,7 +191,7 @@ async function handleCfRequest(payload) {
     }
 
     if (op === 'put') {
-      const res = await fetch(`${base}/values/${encodeURIComponent(payload.key)}`, {
+      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, {
         method: 'PUT',
         headers: { ...headers, 'content-type': 'text/plain; charset=utf-8' },
         body: String(payload.value ?? ''),
@@ -173,7 +206,7 @@ async function handleCfRequest(payload) {
     }
 
     if (op === 'delete') {
-      const res = await fetch(`${base}/values/${encodeURIComponent(payload.key)}`, { method: 'DELETE', headers })
+      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, { method: 'DELETE', headers })
       if (res.status === 404) return { ok: true }
       const text = await res.text()
       if (!res.ok) return { ok: false, error: cfError(res.status, text) }
@@ -195,7 +228,7 @@ async function handleCfNamespaces() {
     const all = []
     let page = 1
     for (;;) {
-      const res = await fetch(`${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces?per_page=100&page=${page}`, { headers: cfHeaders() })
+      const res = await cfFetch(`${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces?per_page=100&page=${page}`, { headers: cfHeaders() })
       const text = await res.text()
       if (!res.ok) return { ok: false, code: 'cf_error', error: cfError(res.status, text) }
       const env = JSON.parse(text)
@@ -244,7 +277,7 @@ async function handleCfTest() {
   const cfg = cfConfig()
   if (!cfg.token || !cfg.accountId) return { ok: false, error: 'أكمل Account ID و API Token أولاً' }
   try {
-    const res = await fetch(`${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces?per_page=5`, { headers: cfHeaders() })
+    const res = await cfFetch(`${CF_BASE}/accounts/${cfg.accountId}/storage/kv/namespaces?per_page=5`, { headers: cfHeaders() })
     const text = await res.text()
     if (!res.ok) return { ok: false, error: cfError(res.status, text) }
     const env = JSON.parse(text)

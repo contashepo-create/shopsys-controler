@@ -22,13 +22,31 @@ export function ContentPage() {
   const [currentVersion, setCurrentVersion] = useState<string | null>(null)
 
   const [busy, setBusy] = useState(false)
+  // قراءة فاشلة لأي من القسمين = نموذج فارغ؛ حفظه كان سيمسح المحتوى الحقيقي عند كل العملاء
+  const [aboutLoad, setAboutLoad] = useState<'loading' | 'ok' | string>('loading')
+  const [versionLoad, setVersionLoad] = useState<'loading' | 'ok' | string>('loading')
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
+    let cancelled = false
+    setAboutLoad('loading'); setVersionLoad('loading')
     void (async () => {
-      const [about, ver] = await Promise.all([
-        bridge.cf.get('services', 'about'),
-        bridge.cf.get('services', 'version'),
-      ])
+      let about: Awaited<ReturnType<typeof bridge.cf.get>>
+      let ver: Awaited<ReturnType<typeof bridge.cf.get>>
+      try {
+        [about, ver] = await Promise.all([
+          bridge.cf.get('services', 'about'),
+          bridge.cf.get('services', 'version'),
+        ])
+      } catch (e) {
+        if (cancelled) return
+        const msg = e instanceof Error ? e.message : String(e)
+        setAboutLoad(msg); setVersionLoad(msg)
+        return
+      }
+      if (cancelled) return
+      setAboutLoad(about.ok ? 'ok' : (about.error ?? 'تعذر القراءة'))
+      setVersionLoad(ver.ok ? 'ok' : (ver.error ?? 'تعذر القراءة'))
       if (about.ok && about.value) {
         try {
           const o = JSON.parse(about.value) as Record<string, string>
@@ -45,9 +63,18 @@ export function ContentPage() {
         } catch { /* ignore */ }
       }
     })()
-  }, [])
+    return () => { cancelled = true }
+  }, [reload])
+
+  const loadBanner = (state: string, what: string) => state === 'ok' || state === 'loading' ? null : (
+    <div style={{ color: 'var(--danger)', fontSize: 12.5, marginBlockEnd: 8 }}>
+      ⚠️ تعذر قراءة {what} الحالي — {state}. الحفظ معطّل حتى لا يُكتب نموذج فارغ فوقه.{' '}
+      <Btn size="sm" onClick={() => setReload((n) => n + 1)}>إعادة المحاولة</Btn>
+    </div>
+  )
 
   async function saveAbout() {
+    if (aboutLoad !== 'ok') { toast('لم تُقرأ «حول» الحالية بعد — أعد المحاولة أولاً', 'error'); return }
     setBusy(true)
     try {
       await updateAbout({
@@ -60,6 +87,7 @@ export function ContentPage() {
   }
 
   async function saveVersion() {
+    if (versionLoad !== 'ok') { toast('لم تُقرأ بيانات التحديث الحالية بعد — أعد المحاولة أولاً', 'error'); return }
     if (!/^\d+\.\d+\.\d+$/.test(version.trim())) { toast('صيغة النسخة يجب أن تكون x.y.z', 'error'); return }
     setBusy(true)
     try {
@@ -74,6 +102,7 @@ export function ContentPage() {
     <div className="grid-2" style={{ alignItems: 'start' }}>
       <div className="card">
         <div className="card-title">📄 محتوى «حول» (يظهر لكل العملاء)</div>
+        {loadBanner(aboutLoad, 'محتوى «حول»')}
         <Field label="العنوان" value={aboutTitle} onChange={setAboutTitle} />
         <Textarea label="النص" value={aboutBody} onChange={setAboutBody} rows={5} />
         <div className="grid-2">
@@ -82,7 +111,7 @@ export function ContentPage() {
         </div>
         <Field label="الموقع" value={aboutWebsite} onChange={setAboutWebsite} dir="ltr" />
         <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Btn kind="primary" disabled={busy} onClick={() => void saveAbout()}>حفظ في الاسمين</Btn>
+          <Btn kind="primary" disabled={busy || aboutLoad !== 'ok'} onClick={() => void saveAbout()}>حفظ في الاسمين</Btn>
         </div>
       </div>
 
@@ -93,7 +122,7 @@ export function ContentPage() {
             نقطة <span className="mono">/version</span> تُقرأ من مساحة الخدمات <span className="mono">SHOPSYS_KV</span> وهي غير مضبوطة.
             <div style={{ marginBlockStart: 8 }}><Link className="btn btn-sm" to="/settings">اضبطها من الإعدادات</Link></div>
           </div>
-        ) : null}
+        ) : loadBanner(versionLoad, 'إعلان التحديث')}
         <Field label="النسخة الجديدة (x.y.z)" value={version} onChange={setVersion} dir="ltr" placeholder="1.0.20" />
         <Field label="رابط التنزيل" value={downloadUrl} onChange={setDownloadUrl} dir="ltr" />
         <Field label="SHA-256" value={sha256} onChange={setSha256} mono />
@@ -103,7 +132,7 @@ export function ContentPage() {
           <span>تحديث إجباري</span>
         </label>
         <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <Btn kind="primary" disabled={busy || !servicesAvailable} onClick={() => void saveVersion()}>نشر التحديث</Btn>
+          <Btn kind="primary" disabled={busy || !servicesAvailable || versionLoad !== 'ok'} onClick={() => void saveVersion()}>نشر التحديث</Btn>
         </div>
       </div>
 

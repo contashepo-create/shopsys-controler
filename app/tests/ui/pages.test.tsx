@@ -215,7 +215,7 @@ describe('صفحة العملاء', () => {
 
   it('التعطيل يطلب تأكيداً ثم يستدعي التعطيل للعميل الصحيح', async () => {
     const user = userEvent.setup()
-    ca.deactivateCustomer.mockResolvedValue(undefined)
+    ca.deactivateCustomer.mockResolvedValue({ notes: [] })
     renderPage(<CustomersPage />)
     await user.click(rowOf('أحمد'))
     await user.click(screen.getByRole('button', { name: '🔥 تعطيل' }))

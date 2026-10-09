@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useDataStore } from '../../stores/data.store.ts'
 import { deactivateCustomer } from '../../data/customerActions.ts'
 import { readCloudFlags, sendKeyToCustomer, setCloudFlag } from '../../data/actions.ts'
-import { filterCustomers, sortCustomers, STATUS_LABELS_AR, type CustomerStatus, type CustomerView, type CustomerSortKey } from '../../core/customers.ts'
+import { filterCustomers, isValidPlan, sortCustomers, STATUS_LABELS_AR, type CustomerStatus, type CustomerView, type CustomerSortKey } from '../../core/customers.ts'
 import { PLAN_LABELS_AR, FEATURE_LABELS_AR, MODULE_LABELS_AR, LICENSE_FEATURES, type LicensePlan, type LicenseFeature } from '../../core/license.ts'
 import { activityDisplay, activityLabel, modulesIncludedInActivity, resolveClientActivity } from '../../core/activities.ts'
 import { totalBranches, totalUsers } from '../../core/issueForm.ts'
@@ -55,8 +55,9 @@ export function CustomersPage() {
     setConfirmDeactivate(null)
     setBusy(true)
     try {
-      await deactivateCustomer(c)
+      const { notes } = await deactivateCustomer(c)
       toast('تم تعطيل العميل — يُرفض مفتاحه عند أول مزامنة', 'ok')
+      for (const n of notes) toast(n, 'info')
       await refresh()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')
@@ -175,13 +176,22 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
   const c = props.customer
   const servicesAvailable = useDataStore((s) => s.servicesAvailable)
   const [flags, setFlags] = useState<{ disabledFeatures: string[]; noteAr: string }>({ disabledFeatures: [], noteAr: '' })
+  const [flagsError, setFlagsError] = useState('')
   const [busy, setBusy] = useState(false)
   const activity = resolveClientActivity(c).id
   const included = modulesIncludedInActivity(activity)
+  // ما يضيفه المفتاح فوق النشاط فقط — بلا تكرار لقسم مشمول أصلاً
+  const extraOnly = c.extraModules.filter((m, i, a) => !included.includes(m) && a.indexOf(m) === i)
 
   useEffect(() => {
     if (!servicesAvailable) return
-    void readCloudFlags(c.deviceId).then(setFlags).catch(() => {})
+    let cancelled = false
+    setFlagsError('')
+    void readCloudFlags(c.deviceId).then((f) => { if (!cancelled) setFlags(f) }).catch((e: unknown) => {
+      // لا نبتلع الخطأ: بدونه تظهر كل الميزات «شغّالة» وهي قد تكون مطفأة
+      if (!cancelled) setFlagsError(e instanceof Error ? e.message : String(e))
+    })
+    return () => { cancelled = true }
   }, [c.deviceId, servicesAvailable])
 
   async function toggleFlag(f: LicenseFeature, disable: boolean) {
@@ -189,6 +199,7 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
     try {
       await setCloudFlag(c.deviceId, f, disable, disable ? 'تعطيل مؤقت من اللوحة' : '')
       setFlags(await readCloudFlags(c.deviceId))
+      setFlagsError('')
       toast(disable ? `🔴 أُطفئت «${FEATURE_LABELS_AR[f]}» مؤقتاً` : `🟢 أُعيد تشغيل «${FEATURE_LABELS_AR[f]}»`, 'ok')
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setBusy(false)
@@ -196,8 +207,12 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
 
   async function copyKey() {
     if (!c.licenseKey) return
-    await navigator.clipboard.writeText(c.licenseKey)
-    toast('تم نسخ المفتاح ✓', 'ok')
+    try {
+      await navigator.clipboard.writeText(c.licenseKey)
+      toast('تم نسخ المفتاح ✓', 'ok')
+    } catch {
+      toast('تعذر النسخ — حدد المفتاح الظاهر وانسخه يدوياً', 'error')
+    }
   }
 
   async function sendKey() {
@@ -211,7 +226,7 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
   }
 
   const plan = (c.plan || 'trial') as LicensePlan
-  const knownPlan = plan in PLAN_LABELS_AR
+  const knownPlan = isValidPlan(plan)
 
   return (
     <Modal
@@ -254,8 +269,8 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
           </div>
           <div className="row">
             {included.map((m) => <Badge key={m} kind="muted">{MODULE_LABELS_AR[m] ?? m} · ضمن النشاط</Badge>)}
-            {c.extraModules.map((m) => <Badge key={m} kind="ok">{MODULE_LABELS_AR[m] ?? m}</Badge>)}
-            {included.length === 0 && c.extraModules.length === 0 ? <span className="muted">لا أقسام إضافية</span> : null}
+            {extraOnly.map((m) => <Badge key={m} kind="ok">{MODULE_LABELS_AR[m] ?? m} · إضافي</Badge>)}
+            {included.length === 0 && extraOnly.length === 0 ? <span className="muted">لا أقسام إضافية</span> : null}
           </div>
         </div>
       </div>
@@ -267,7 +282,7 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
             <div className="row">
               <span className="muted" style={{ fontSize: 12 }}>صدر {c.licenseIssuedAt ?? '—'} · بصمة <span className="mono">{c.fingerprint}</span></span>
               <Btn size="sm" onClick={() => void copyKey()}>نسخ</Btn>
-              <Btn size="sm" kind="primary" disabled={busy || c.status === 'revoked'} onClick={() => void sendKey()}>📨 إرسال للعميل</Btn>
+              <Btn size="sm" kind="primary" disabled={busy || c.status === 'revoked' || c.status === 'expired'} title={c.status === 'expired' ? 'المفتاح منتهٍ — جدّد أولاً' : undefined} onClick={() => void sendKey()}>📨 إرسال للعميل</Btn>
             </div>
           ) : null}
         </div>
@@ -284,6 +299,7 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
             <div className="muted" style={{ fontSize: 12.5 }}>يحتاج مساحة الخدمات — <Link to="/settings">اضبطها من الإعدادات</Link>.</div>
           ) : (
             <>
+              {flagsError ? <div style={{ color: 'var(--danger)', fontSize: 12.5, marginBlockEnd: 8 }}>⚠️ تعذر قراءة حالة الإطفاء الحالية — {flagsError}. الأزرار قد لا تعكس الواقع.</div> : null}
               <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 8 }}>مناسب لتأخر السداد مثلاً — يُطفئ الميزة من السحابة ويعيدها بنقرة.</div>
               {LICENSE_FEATURES.filter((f) => c.features.includes(f)).map((f) => {
                 const off = flags.disabledFeatures.includes(f)
@@ -313,7 +329,7 @@ export function IssueDialog(props: {
 }) {
   const c = props.customer
   return (
-    <Modal open={props.open} wide
+    <Modal open={props.open} wide dismissible={false}
       title={needsActivation(c) ? `تنشيط العميل — ${c.customer || c.deviceId}` : `تعديل اشتراك — ${c.customer || c.deviceId}`}
       sub="المفتاح الجديد يحلّ محل القديم ويحمل كل الأقسام والميزات"
       onClose={props.onClose}>

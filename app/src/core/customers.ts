@@ -110,6 +110,8 @@ export function computeStatus(args: {
   if (!args.plan) return 'none'
   if (args.expiresAt == null) return 'active' // lifetime
   const days = daysBetween(args.todayIso, args.expiresAt)
+  // تاريخ غير مفهوم: لا نعرضه «نشطاً» (NaN كان يفلت من كل المقارنات) — يُعامل كمنتهٍ ليلفت النظر
+  if (!Number.isFinite(days)) return 'expired'
   if (days < 0) return 'expired'
   if (days <= EXPIRING_WINDOW_DAYS) return 'expiring'
   return 'active'
@@ -255,4 +257,16 @@ export function filterCustomers(list: readonly CustomerView[], query: string, st
 
 export function isValidPlan(plan: string): plan is LicensePlan {
   return plan === 'trial' || plan === 'basic' || plan === 'pro' || plan === 'lifetime'
+}
+
+/**
+ * قائمة «يحتاج تجديداً» في اللوحة الرئيسية: القريب من الانتهاء أولاً (الأقرب فالأبعد)،
+ * ثم المنتهي (الأحدث انتهاءً أولاً — الأرجح أنه سيجدد). كان الترتيب ترتيب التحميل فيضيع
+ * من ينتهي غداً خلف من انتهى قبل سنة.
+ */
+export function expiringFirst(customers: readonly CustomerView[], limit: number): CustomerView[] {
+  const exp = (c: CustomerView) => c.expiresAt ?? ''
+  const expiring = customers.filter((c) => c.status === 'expiring').sort((a, b) => exp(a).localeCompare(exp(b)))
+  const expired = customers.filter((c) => c.status === 'expired').sort((a, b) => exp(b).localeCompare(exp(a)))
+  return [...expiring, ...expired].slice(0, limit)
 }

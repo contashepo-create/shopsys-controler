@@ -268,11 +268,11 @@ describe('الإشعارات: إرسال / سجل / تعديل / حذف / إيص
   it('عام → notices:global فقط؛ نشاط → أجهزة النشاط فقط؛ مجموعة مكررة → مرة لكل جهاز', async () => {
     await seedCustomers()
     const g = await actions.sendNotice({ body: 'تحديث مهم للجميع', targeting: { type: 'all' }, customers: customers() })
-    expect(g).toEqual({ targets: 2, mode: 'global' })
+    expect(g).toEqual({ targets: 2, mode: 'global', failed: [] })
     expect(h.fake.json<unknown[]>('license', 'notices:global')).toHaveLength(1)
 
     const a = await actions.sendNotice({ body: 'عرض للصيدليات', targeting: { type: 'activity', activityId: 'pharmacy' }, customers: customers() })
-    expect(a).toEqual({ targets: 1, mode: 'devices' })
+    expect(a).toEqual({ targets: 1, mode: 'devices', failed: [] })
     expect(h.fake.kv.license.has(`notices:${DEV2}`)).toBe(true)
     expect(h.fake.kv.license.has(`notices:${DEV}`)).toBe(false)
 

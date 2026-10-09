@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { KeyRound, BellRing } from 'lucide-react'
 import { useDataStore } from '../../stores/data.store.ts'
-import { STATUS_LABELS_AR } from '../../core/customers.ts'
+import { expiringFirst, STATUS_LABELS_AR } from '../../core/customers.ts'
 import { PLAN_LABELS_AR, type LicensePlan } from '../../core/license.ts'
 import { Badge, EmptyState } from '../components/ui.tsx'
 import { isDesktop } from '../../data/bridge.ts'
@@ -27,7 +27,7 @@ export function DashboardPage() {
   )
 
   const expiringSoon = useMemo(
-    () => customers.filter((c) => c.status === 'expiring' || c.status === 'expired').slice(0, 8),
+    () => expiringFirst(customers, 8),
     [customers],
   )
 
@@ -54,7 +54,7 @@ export function DashboardPage() {
         <div className="card">
           <div className="card-title">🕘 آخر ظهور للعملاء</div>
           {recent.length === 0 ? (
-            <EmptyState icon="👥" text="لا يوجد عملاء بعد" hint="ابدأ بإصدار مفتاح من صفحة التراخيص" />
+            <EmptyState icon="👥" text="لا يوجد عملاء بعد" hint="ابدأ بإصدار مفتاح من صفحة «إصدار المفاتيح»" />
           ) : (
             <div className="table-wrap">
               <table className="table">

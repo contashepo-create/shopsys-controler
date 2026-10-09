@@ -50,3 +50,11 @@ export function createDesktopSigner(): TestSigner {
   const handle = factory(nodeCrypto, Buffer, () => privateKey)
   return { sign: (json) => handle(json) as { ok: boolean; key?: string; error?: string }, publicKeyB64u }
 }
+
+export type CfFetch = (url: string, init?: unknown, opts?: { retries?: number; sleep?: (ms: number) => Promise<void>; fetch?: (u: string, i?: unknown) => Promise<unknown> }) => Promise<{ status: number }>
+
+/** cfFetch (إعادة المحاولة لطلبات Cloudflare) كما في main.cjs بالضبط. */
+export function desktopCfFetch(): { cfFetch: CfFetch; retries: number; baseMs: number } {
+  const src = `${extractConst('CF_RETRIES')}\n${extractConst('CF_RETRY_BASE_MS')}\n${extractFunction('cfRetryDelay')}\nasync ${extractFunction('cfFetch')}\nreturn { cfFetch, retries: CF_RETRIES, baseMs: CF_RETRY_BASE_MS }`
+  return new Function(src)() as { cfFetch: CfFetch; retries: number; baseMs: number }
+}

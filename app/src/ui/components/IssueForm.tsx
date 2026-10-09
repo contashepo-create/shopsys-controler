@@ -38,7 +38,9 @@ export function IssueForm(props: {
 
   const [deviceId, setDeviceId] = useState(fixed?.deviceId ?? '')
   const [found, setFound] = useState<CustomerView | null>(fixed)
-  const [lookupState, setLookupState] = useState<'idle' | 'loading' | 'found' | 'new'>(fixed ? 'found' : 'idle')
+  const [lookupState, setLookupState] = useState<'idle' | 'loading' | 'found' | 'new' | 'error'>(fixed ? 'found' : 'idle')
+  const [lookupError, setLookupError] = useState('')
+  const [lookupNonce, setLookupNonce] = useState(0)
   const [defaults, setDefaults] = useState<GlobalDefaults | null>(null)
   const [prefilledFor, setPrefilledFor] = useState<string | null>(null)
 
@@ -64,7 +66,10 @@ export function IssueForm(props: {
   const deviceValid = DEVICE_ID_RE.test(normalizedId)
   const existing = found && found.deviceId === normalizedId ? found : null
 
-  useEffect(() => { void readGlobalDefaults().then(setDefaults).catch(() => setDefaults({ ...FALLBACK_DEFAULTS })) }, [])
+  const [defaultsFailed, setDefaultsFailed] = useState(false)
+  useEffect(() => {
+    void readGlobalDefaults().then(setDefaults).catch(() => { setDefaultsFailed(true); setDefaults({ ...FALLBACK_DEFAULTS }) })
+  }, [])
 
   // التعرّف على الجهاز: من القائمة المحمّلة فوراً، ثم من السحابة مباشرة (أحدث بيانات)
   useEffect(() => {
@@ -76,9 +81,15 @@ export function IssueForm(props: {
     void lookupDevice(normalizedId).then((v) => {
       if (cancelled) return
       if (v) { setFound(v); setLookupState('found') } else if (!local) { setFound(null); setLookupState('new') }
-    }).catch(() => { if (!cancelled && !local) setLookupState('new') })
+    }).catch((e: unknown) => {
+      // فشل القراءة ≠ جهاز جديد: لو عاملناه كجديد لعُبّئ بالافتراضيات وسُحبت من العميل أقسامه وميزاته
+      if (cancelled || local) return
+      setFound(null)
+      setLookupError(e instanceof Error ? e.message : String(e))
+      setLookupState('error')
+    })
     return () => { cancelled = true }
-  }, [normalizedId, deviceValid, customers, fixed])
+  }, [normalizedId, deviceValid, customers, fixed, lookupNonce])
 
   // تعبئة تلقائية — مرة لكل هوية (عميل موجود / جهاز جديد)، ولا نكتب فوق تعديلاتك بعدها
   useEffect(() => {
@@ -154,6 +165,7 @@ export function IssueForm(props: {
     if (!deviceValid) { toast('معرّف الجهاز غير صحيح — الصيغة SHOP-XXXX-XXXX-XXXX', 'error'); return }
     if (!customerName.trim()) { toast('اسم العميل مطلوب', 'error'); return }
     if (!isActivityValueValid(activityId)) { toast('معرّف النشاط غير صالح', 'error'); return }
+    if (lookupState === 'loading' || lookupState === 'error') { toast('انتظر التحقق من الجهاز أولاً', 'error'); return }
     setBusy(true)
     try {
       const res = await issueLicense({
@@ -228,7 +240,9 @@ export function IssueForm(props: {
           <span className="hint">
             {!deviceValid ? 'يظهر للعميل في شاشة التفعيل داخل التطبيق'
               : lookupState === 'loading' ? '… جارٍ البحث عن الجهاز'
+              : lookupState === 'error' ? <span style={{ color: 'var(--danger)' }}>⚠️ تعذر التحقق من الجهاز — {lookupError} <button type="button" className="btn btn-sm btn-ghost" onClick={() => { setLookupState('loading'); setLookupNonce((n) => n + 1) }}>إعادة المحاولة</button></span>
               : existing ? `✓ عميل مسجَّل — ${existing.customer || 'بلا اسم'} · ${PLAN_LABELS_AR[existing.plan as LicensePlan] ?? existing.plan ?? 'بلا باقة'}${existing.expiresAt ? ` حتى ${existing.expiresAt}` : ''}`
+              : defaultsFailed ? '⚠️ جهاز جديد — تعذر قراءة الافتراضيات المحفوظة فعُبّئ بقيم آمنة؛ راجع الباقة والميزات'
               : '✓ جهاز جديد — عُبّئ النموذج من الافتراضيات'}
           </span>
         </div>
@@ -338,7 +352,7 @@ export function IssueForm(props: {
       ) : null}
       <div className="row" style={{ justifyContent: 'flex-end', marginBlockStart: 8 }}>
         {props.onClose ? <Btn onClick={props.onClose}>إلغاء</Btn> : null}
-        <Btn kind="primary" disabled={busy || !deviceValid || !customerName.trim() || lookupState === 'loading'} onClick={() => void submit()}>
+        <Btn kind="primary" disabled={busy || !deviceValid || !customerName.trim() || lookupState === 'loading' || lookupState === 'error'} onClick={() => void submit()}>
           {busy ? 'جارٍ التوقيع…' : existing ? (existing.status === 'active' || existing.status === 'expiring' ? 'إصدار المفتاح المعدَّل' : 'تنشيط العميل') : 'إصدار المفتاح'}
         </Btn>
       </div>

@@ -84,7 +84,12 @@ export function NotificationsPage() {
         customers,
       })
       toast(`✅ تم الإرسال — ${preview} (${res.targets} جهاز)`, 'ok')
-      setBody(''); setTitle('')
+      if (res.failed.length > 0) {
+        // نجاح جزئي: لا نمسح النص حتى يمكن إعادة الإرسال للأجهزة التي فشلت
+        toast(`⚠️ تعذر الإرسال إلى ${res.failed.length} جهاز: ${res.failed.slice(0, 5).join('، ')}${res.failed.length > 5 ? '…' : ''} — أعد الإرسال لها لاحقاً`, 'error')
+      } else {
+        setBody(''); setTitle('')
+      }
       await loadSent()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')
@@ -306,7 +311,7 @@ function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSa
   }
 
   return (
-    <Modal open wide title="تعديل الإشعار" sub={`أُرسل ${fmt(n.createdAt)}`} onClose={props.onClose}
+    <Modal open wide dismissible={false} title="تعديل الإشعار" sub={`أُرسل ${fmt(n.createdAt)}`} onClose={props.onClose}
       actions={<><Btn onClick={props.onClose}>إلغاء</Btn><Btn kind="primary" disabled={busy || !body.trim()} onClick={() => void save()}>{busy ? '…' : 'حفظ التعديل'}</Btn></>}>
       <Field label="العنوان" value={title} onChange={setTitle} />
       <Textarea label="النص" value={body} onChange={setBody} rows={6} />

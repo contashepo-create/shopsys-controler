@@ -21,6 +21,8 @@ export interface FakeBridge {
   missingNs: Set<Ns>
   /** أعطال كتابة: `${ns}:${key}` */
   failPut: Set<string>
+  /** أعطال قراءة (مثل 429 لحظي): `${ns}:${key}` */
+  failGet: Set<string>
   /** فشل التوقيع (المفتاح الخاص غير مستورد) */
   signFails: boolean
   pageSize: number
@@ -41,13 +43,14 @@ export function createFakeBridge(): FakeBridge {
     stats: { gets: 0, puts: 0, lists: 0, maxInFlight: 0 },
     missingNs: new Set(),
     failPut: new Set(),
+    failGet: new Set(),
     signFails: false,
     pageSize: 1000,
     latencyMs: 0,
     reset() {
       f.kv.license.clear(); f.kv.services.clear(); f.audit.length = 0
       f.stats = { gets: 0, puts: 0, lists: 0, maxInFlight: 0 }
-      f.missingNs.clear(); f.failPut.clear(); f.signFails = false; f.pageSize = 1000; f.latencyMs = 0
+      f.missingNs.clear(); f.failPut.clear(); f.failGet.clear(); f.signFails = false; f.pageSize = 1000; f.latencyMs = 0
     },
     json<T>(ns: Ns, key: string): T | null {
       const raw = f.kv[ns].get(key)
@@ -88,6 +91,7 @@ export function createFakeBridge(): FakeBridge {
       get: (ns, key) => track(() => {
         f.stats.gets++
         const m = missing(ns); if (m) return { ...m, value: null }
+        if (f.failGet.has(`${ns}:${key}`)) return { ok: false, value: null, error: 'تجاوزت حد طلبات Cloudflare — حاول بعد لحظات', code: 'cf_error' as CfErrorCode }
         return { ok: true, value: f.kv[ns].get(key) ?? null }
       }),
       put: (ns, key, value) => track(() => {

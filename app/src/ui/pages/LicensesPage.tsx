@@ -38,6 +38,8 @@ const SELECTABLE_FEATURES = LICENSE_FEATURES.filter((f) => !DERIVED_FEATURES.inc
 function DefaultsTab() {
   const toast = useToast()
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [reload, setReload] = useState(0)
   const [plan, setPlan] = useState<LicensePlan>('basic')
   const [days, setDays] = useState('365')
   const [users, setUsers] = useState('')
@@ -47,13 +49,20 @@ function DefaultsTab() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
+    setLoaded(false); setLoadError('')
     void readGlobalDefaults().then((d) => {
+      if (cancelled) return
       setPlan(d.plan); setDays(String(d.days))
       setUsers(d.extraUsers ? String(d.extraUsers) : ''); setBranches(d.extraBranches ? String(d.extraBranches) : '')
       setFeatures(d.features.filter((f) => !DERIVED_FEATURES.includes(f))); setModules(d.extraModules)
       setLoaded(true)
-    }).catch(() => setLoaded(true))
-  }, [])
+    }).catch((e: unknown) => {
+      // لا نعرض نموذجاً بقيم مبدئية: حفظه كان سيكتب فوق الافتراضيات الحقيقية
+      if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e))
+    })
+    return () => { cancelled = true }
+  }, [reload])
 
   const toggle = <T,>(list: T[], set: (v: T[]) => void, v: T) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
 
@@ -69,6 +78,14 @@ function DefaultsTab() {
     setBusy(false)
   }
 
+  if (loadError) {
+    return (
+      <div className="card">
+        <EmptyState icon="⚠️" text="تعذر قراءة الافتراضيات الحالية" hint={`${loadError} — لم نعرض النموذج حتى لا تُحفظ قيم مبدئية فوق إعدادك`} />
+        <div className="row" style={{ justifyContent: 'center' }}><Btn kind="primary" onClick={() => setReload((n) => n + 1)}>إعادة المحاولة</Btn></div>
+      </div>
+    )
+  }
   if (!loaded) return <div className="card"><EmptyState icon="⏳" text="جارٍ التحميل…" /></div>
 
   return (
@@ -111,6 +128,15 @@ function DefaultsTab() {
 
 function SearchTab() {
   const toast = useToast()
+  const refresh = useDataStore((s) => s.refresh)
+
+  async function copyKey(key: string | undefined) {
+    if (!key) return
+    try {
+      await navigator.clipboard.writeText(key)
+      toast('تم نسخ المفتاح ✓', 'ok')
+    } catch { toast('تعذر النسخ — حدد المفتاح وانسخه يدوياً', 'error') }
+  }
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<{ raw: string; fingerprint: string; revoked: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -124,6 +150,7 @@ function SearchTab() {
       if (DEVICE_ID_RE.test(q.toUpperCase())) {
         // بحث بمعرّف الجهاز → بصمة مفتاحه الحالي من dev:
         const dev = await bridge.cf.get('license', `dev:${q.toUpperCase()}`)
+        if (!dev.ok) throw new Error(dev.error ?? 'تعذر قراءة سجل الجهاز')
         let devFp: string | undefined
         try { devFp = dev.ok && dev.value ? (JSON.parse(dev.value) as { fingerprint?: string }).fingerprint : undefined } catch { devFp = undefined }
         if (!devFp) { setResult(null); toast('لا يوجد مفتاح لهذا الجهاز', 'error'); setBusy(false); return }
@@ -135,11 +162,15 @@ function SearchTab() {
       if (!rec.ok) throw new Error(rec.error ?? 'تعذر القراءة')
       if (!rec.value) { setResult(null); toast(`لا سجل للبصمة ${fp}`, 'error'); setBusy(false); return }
       const revokedRaw = await bridge.cf.get('license', 'revoked')
+      // قراءة فاشلة لا تعني «سليم» — نوقف بدل عرض شارة خاطئة
+      if (!revokedRaw.ok) throw new Error(`تعذر قراءة قائمة الحرق: ${revokedRaw.error ?? ''}`)
       let revoked = false
       try {
-        const list = revokedRaw.ok && revokedRaw.value ? JSON.parse(revokedRaw.value) as string[] : []
+        const list = revokedRaw.value ? JSON.parse(revokedRaw.value) as unknown : []
         revoked = Array.isArray(list) && list.includes(fp)
       } catch { revoked = false }
+      // السجل نفسه يحمل علامة الحرق أيضاً (تُكتب عند الحرق) — أيّ منهما يكفي
+      try { if ((JSON.parse(rec.value) as { revoked?: unknown }).revoked) revoked = true } catch { /* سجل غير مفهوم */ }
       setResult({ raw: rec.value, fingerprint: fp, revoked })
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')
@@ -151,9 +182,11 @@ function SearchTab() {
     if (!result) return
     setBusy(true)
     try {
-      await revokeLicense(result.fingerprint)
+      const { notes } = await revokeLicense(result.fingerprint)
       setResult({ ...result, revoked: true })
-      toast('🔥 تم حرق المفتاح في الاسمين — لن يعمل عند العميل بعد المزامنة', 'ok')
+      toast('🔥 تم حرق المفتاح — لن يعمل عند العميل بعد المزامنة', 'ok')
+      for (const n of notes) toast(n, 'info')
+      void refresh()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')
     }
@@ -197,7 +230,7 @@ function SearchTab() {
           <div className="muted" style={{ fontSize: 12, marginBlockEnd: 6 }}>المفتاح:</div>
           <div className="card" style={{ marginBlockEnd: 10 }}><span className="mono" style={{ wordBreak: 'break-all' }}>{parsed?.key ?? '—'}</span></div>
           <div className="row" style={{ justifyContent: 'flex-end' }}>
-            <Btn onClick={() => { if (parsed?.key) { void navigator.clipboard.writeText(parsed.key); toast('تم نسخ المفتاح ✓', 'ok') } }}>نسخ المفتاح</Btn>
+            <Btn onClick={() => void copyKey(parsed?.key)}>نسخ المفتاح</Btn>
             {!result.revoked ? <Btn kind="danger" disabled={busy} onClick={() => void burn()}>🔥 حرق المفتاح</Btn> : null}
           </div>
         </div>
