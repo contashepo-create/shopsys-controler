@@ -115,7 +115,7 @@ export function FeaturesPage() {
       )}
 
       {selected ? (
-        <IssueDialog open={editOpen} customer={selected} onClose={() => setEditOpen(false)} onDone={async () => { setEditOpen(false); await refresh() }} />
+        <IssueDialog key={`${selected.deviceId}:${editOpen}`} open={editOpen} customer={selected} onClose={() => setEditOpen(false)} onDone={async () => { await refresh() }} />
       ) : null}
     </>
   )

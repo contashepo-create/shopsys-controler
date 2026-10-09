@@ -1,7 +1,8 @@
 /**
  * Customer read-model — builds the monitoring view from raw KV records.
  * KV schema (SHOPSYS_CONTROL, mirrors tools/devbot in the shopsys repo):
- *   dev:<deviceId>   → { plan, expiresAt, customer, message, fingerprint }
+ *   dev:<deviceId>   → { plan, expiresAt, customer, message, fingerprint, activityId? }
+ *                      (activityId = النشاط الذي اختاره العميل في التطبيق / آخر نشاط اعتمده المطوّر)
  *   lic:<fingerprint>→ { payload, key, issuedAt, revoked, note? }
  *   log:<deviceId>   → [{ at: 'YYYY-MM-DD HH:MM', text }]   (max 200, same as the bot)
  *   email:<mail>     → deviceId
@@ -11,6 +12,7 @@
  */
 
 import { daysBetween, keyFingerprint, type LicenseFeature, type LicensePayload, type LicensePlan } from './license.ts'
+import { activityDisplay, activityFromDevRecord } from './activities.ts'
 
 export type CustomerStatus = 'active' | 'expiring' | 'expired' | 'revoked' | 'none'
 
@@ -22,6 +24,9 @@ export interface DevRecord {
   customer?: string
   message?: string
   fingerprint?: string
+  /** النشاط الذي اختاره العميل (أو آخر نشاط اعتمده المطوّر) — انظر activityFromDevRecord */
+  activityId?: string
+  [extra: string]: unknown
 }
 
 export interface LicRecord {
@@ -43,7 +48,10 @@ export interface CustomerView {
   email: string | null
   plan: string
   expiresAt: string | null
+  /** نشاط المفتاح الموقّع الحالي */
   activityId: string | null
+  /** النشاط كما اختاره العميل (من سجل الجهاز dev:) */
+  clientActivityId: string | null
   features: LicenseFeature[]
   extraUsers: number
   extraBranches: number
@@ -99,6 +107,19 @@ export function computeStatus(args: {
   if (days < 0) return 'expired'
   if (days <= EXPIRING_WINDOW_DAYS) return 'expiring'
   return 'active'
+}
+
+/**
+ * سجل dev:<deviceId> الجديد بعد الإصدار — يُدمج مع السجل الحالي بدل استبداله، حتى لا يضيع
+ * ما كتبه تطبيق العميل/الـ worker (مثل النشاط المختار و lastSeenAt)، ويُكتب النشاط المعتمد
+ * (لو حُدد) ليظهر تلقائياً في الإصدار القادم. يُزال disabledAt لأن الإصدار تنشيط.
+ */
+export function mergeDevRecord(raw: string | null, next: { plan: string; expiresAt: string | null; customer: string; fingerprint: string; activityId?: string }): string {
+  const prev = parseDevRecord(raw)
+  const merged: Record<string, unknown> = { ...prev, plan: next.plan, expiresAt: next.expiresAt, customer: next.customer, message: '', fingerprint: next.fingerprint }
+  if (next.activityId) merged.activityId = next.activityId
+  delete merged.disabledAt
+  return JSON.stringify(merged)
 }
 
 /** Append an entry to a device log — same shape the devbot writes (max 200). */
@@ -173,6 +194,7 @@ export function buildCustomerViews(input: BuildViewsInput): CustomerView[] {
       plan,
       expiresAt: expiresAt ?? null,
       activityId: payload?.activityId ?? null,
+      clientActivityId: activityFromDevRecord(dev),
       features: payload?.features ?? [],
       extraUsers: payload?.extraUsers ?? 0,
       extraBranches: payload?.extraBranches ?? 0,
@@ -216,6 +238,8 @@ export function filterCustomers(list: readonly CustomerView[], query: string, st
       || c.deviceId.toLowerCase().includes(q)
       || (c.email ?? '').toLowerCase().includes(q)
       || (c.activityId ?? '').toLowerCase().includes(q)
+      || (c.clientActivityId ?? '').toLowerCase().includes(q)
+      || activityDisplay(c.clientActivityId ?? c.activityId).toLowerCase().includes(q)
     )
   })
 }

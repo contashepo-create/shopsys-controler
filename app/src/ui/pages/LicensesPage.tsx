@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { bridge } from '../../data/bridge.ts'
 import { issueLicense, revokeLicense, previewPayload } from '../../data/actions.ts'
 import { useDataStore } from '../../stores/data.store.ts'
@@ -9,6 +9,8 @@ import {
 } from '../../core/license.ts'
 import { Btn, Field, Select, useToast, Badge, EmptyState } from '../components/ui.tsx'
 import { LicenseKeyResult } from '../components/LicenseKeyResult.tsx'
+import { ActivityPicker, isActivityValueValid } from '../components/ActivityPicker.tsx'
+import { activityDisplay, resolveClientActivity } from '../../core/activities.ts'
 
 type Tab = 'issue' | 'search'
 
@@ -30,11 +32,15 @@ const PLAN_OPTIONS = (Object.keys(PLAN_LABELS_AR) as LicensePlan[]).map((p) => (
 function IssueTab() {
   const toast = useToast()
   const refresh = useDataStore((s) => s.refresh)
+  const customers = useDataStore((s) => s.customers)
   const [deviceId, setDeviceId] = useState('')
   const [customer, setCustomer] = useState('')
   const [plan, setPlan] = useState<LicensePlan>('basic')
   const [days, setDays] = useState('365')
   const [activityId, setActivityId] = useState('')
+  const [activityCustom, setActivityCustom] = useState(false)
+  /** غيّر المطوّر النشاط يدوياً؟ عندها لا نكتب فوق اختياره */
+  const [activityTouched, setActivityTouched] = useState(false)
   const [extraUsers, setExtraUsers] = useState('')
   const [extraBranches, setExtraBranches] = useState('')
   const [features, setFeatures] = useState<LicenseFeature[]>([])
@@ -43,6 +49,22 @@ function IssueTab() {
   const [issued, setIssued] = useState<{ key: string; fingerprint: string } | null>(null)
 
   const deviceValid = DEVICE_ID_RE.test(deviceId.trim().toUpperCase())
+
+  // عميل موجود بنفس معرّف الجهاز؟ → نكتب نشاطه تلقائياً كما اختاره (ويبقى قابلاً للتغيير)
+  const existing = useMemo(
+    () => (deviceValid ? customers.find((c) => c.deviceId === deviceId.trim().toUpperCase()) ?? null : null),
+    [customers, deviceId, deviceValid],
+  )
+  const autoActivity = useMemo(() => (existing ? resolveClientActivity(existing) : { id: '', source: 'none' as const }), [existing])
+  useEffect(() => {
+    if (activityTouched) return
+    setActivityId(autoActivity.id)
+    setActivityCustom(false)
+  }, [autoActivity, activityTouched])
+  useEffect(() => {
+    if (existing && !customer.trim() && existing.customer) setCustomer(existing.customer)
+    // اسم العميل يُعبّأ مرة عند التعرف على الجهاز فقط
+  }, [existing])
 
   function newDeviceId() {
     const bytes = new Uint8Array(12)
@@ -56,6 +78,7 @@ function IssueTab() {
   async function submit() {
     if (!deviceValid) { toast('معرّف الجهاز غير صحيح — الصيغة SHOP-XXXX-XXXX-XXXX', 'error'); return }
     if (!customer.trim()) { toast('اسم العميل مطلوب', 'error'); return }
+    if (!isActivityValueValid(activityId)) { toast('معرّف النشاط غير صالح', 'error'); return }
     setBusy(true)
     try {
       const res = await issueLicense({
@@ -96,7 +119,7 @@ function IssueTab() {
         <LicenseKeyResult licenseKey={issued.key} fingerprint={issued.fingerprint} onCopy={() => toast('تم النسخ ✓', 'ok')} />
         <div className="hr" />
         <div className="row">
-          <Btn onClick={() => { setIssued(null); setCustomer(''); setDeviceId(''); setFeatures([]); setModules([]) }}>إصدار مفتاح آخر</Btn>
+          <Btn onClick={() => { setIssued(null); setCustomer(''); setDeviceId(''); setFeatures([]); setModules([]); setActivityId(''); setActivityCustom(false); setActivityTouched(false) }}>إصدار مفتاح آخر</Btn>
           <Btn onClick={() => void copyPayload()}>نسخ الحمولة القياسية</Btn>
         </div>
       </div>
@@ -114,19 +137,28 @@ function IssueTab() {
               onChange={(e) => setDeviceId(e.target.value.toUpperCase())} />
             <Btn size="sm" onClick={newDeviceId} title="توليد معرّف جهاز جديد (لاختبار أو استبدال)">🎲</Btn>
           </div>
-          <span className="hint">{deviceValid ? '✓ صيغة صحيحة' : 'يظهر للعميل في شاشة التفعيل داخل التطبيق'}</span>
+          <span className="hint">
+            {!deviceValid ? 'يظهر للعميل في شاشة التفعيل داخل التطبيق'
+              : existing ? `✓ عميل مسجَّل: ${existing.customer || '—'}${existing.clientActivityId ? ` · نشاطه: ${activityDisplay(existing.clientActivityId)}` : ''}`
+              : '✓ صيغة صحيحة — جهاز جديد'}
+          </span>
         </div>
         <Field label="اسم العميل *" value={customer} onChange={setCustomer} placeholder="بقالة النور — المنصورة" />
         <div className="grid-2">
           <Select label="الخطة" value={plan} onChange={(v) => setPlan(v as LicensePlan)} options={PLAN_OPTIONS} />
           <Field label="المدة (أيام)" value={days} onChange={setDays} dir="ltr" hint={plan === 'lifetime' ? 'تُهمل مع «مدى الحياة»' : `الحدود: ${PLAN_LIMITS[plan].maxUsers} مستخدم / ${PLAN_LIMITS[plan].maxBranches} فرع`} />
         </div>
+        <ActivityPicker
+          value={activityId}
+          onChange={(v) => { setActivityId(v); setActivityTouched(true) }}
+          clientActivityId={existing?.clientActivityId}
+          source={autoActivity.source}
+          custom={activityCustom}
+          onCustomChange={(v) => { setActivityCustom(v); setActivityTouched(true) }}
+        />
         <div className="grid-2">
-          <Field label="النشاط" value={activityId} onChange={setActivityId} dir="ltr" placeholder="grocery" hint="اختياري — قصر المفتاح على نشاط" />
-          <div className="grid-2">
-            <Field label="+ مستخدمون" value={extraUsers} onChange={setExtraUsers} dir="ltr" />
-            <Field label="+ فروع" value={extraBranches} onChange={setExtraBranches} dir="ltr" />
-          </div>
+          <Field label="+ مستخدمون" value={extraUsers} onChange={setExtraUsers} dir="ltr" />
+          <Field label="+ فروع" value={extraBranches} onChange={setExtraBranches} dir="ltr" />
         </div>
       </div>
 
@@ -233,7 +265,7 @@ function SearchTab() {
           </div>
           <ul className="plain" style={{ fontSize: 13.5 }}>
             <li>الجهاز: <span className="mono">{parsed?.payload?.deviceId ?? '—'}</span></li>
-            <li>النشاط: {parsed?.payload?.activityId ?? 'أي نشاط'}</li>
+            <li>النشاط: {parsed?.payload?.activityId ? activityDisplay(parsed.payload.activityId) : 'أي نشاط'}</li>
             <li>صدر: <span className="mono">{parsed?.payload?.issuedAt ?? '—'}</span> · ينتهي: <span className="mono">{parsed?.payload?.expiresAt ?? 'مدى الحياة'}</span></li>
             <li>الميزات: {(parsed?.payload?.features ?? []).map((f) => FEATURE_LABELS_AR[f as LicenseFeature] ?? f).join('، ') || 'لا شيء'}</li>
             <li>أقسام: {(parsed?.payload?.extraModules ?? []).map((m) => MODULE_LABELS_AR[m] ?? m).join('، ') || 'لا شيء'}</li>

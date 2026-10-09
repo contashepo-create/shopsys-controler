@@ -4,6 +4,7 @@ import { useDataStore } from '../../stores/data.store.ts'
 import { sendNotice } from '../../data/actions.ts'
 import { parseNoticeList, describeTargeting, validateNoticeBody, type NoticeTargeting, type CloudNotice } from '../../core/notices.ts'
 import { Btn, Field, Textarea, useToast, Badge, EmptyState, Modal } from '../components/ui.tsx'
+import { activityLabel } from '../../core/activities.ts'
 
 type TargetType = 'all' | 'device' | 'group' | 'activity'
 
@@ -128,7 +129,7 @@ export function NotificationsPage() {
               <div className="row">
                 {activities.map(([id, count]) => (
                   <Btn key={id} size="sm" kind={activity === id ? 'primary' : 'default'} onClick={() => setActivity(id)}>
-                    {id} ({count})
+                    {activityLabel(id)} ({count})
                   </Btn>
                 ))}
               </div>

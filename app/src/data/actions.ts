@@ -8,7 +8,7 @@ import {
   expiresAfterDays, keyFingerprint, canonicalPayload,
   type LicenseFeature, type LicensePayload, type LicensePlan,
 } from '../core/license.ts'
-import { appendDeviceLogEntry, type CustomerView } from '../core/customers.ts'
+import { appendDeviceLogEntry, mergeDevRecord, type CustomerView } from '../core/customers.ts'
 import { appendNotice, buildNotice, resolveTargetDevices, validateNoticeBody, type NoticeTargeting } from '../core/notices.ts'
 import { appendChatMessage, parseChat, validateReply } from '../core/support.ts'
 import { sanitizeDetails, type AuditAction } from '../core/audit.ts'
@@ -65,12 +65,14 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   const r1 = await bridge.cf.put('license', `lic:${fingerprint}`, licRecord)
   if (!r1.ok) throw new Error(r1.error ?? 'تعذر الكتابة في Cloudflare')
 
-  const devRecord = JSON.stringify({
+  // دمج لا استبدال: يحفظ نشاط العميل المختار وما يكتبه الـ worker، ويعتمد النشاط الجديد
+  const prevDev = await bridge.cf.get('license', `dev:${input.deviceId}`)
+  const devRecord = mergeDevRecord(prevDev.ok ? prevDev.value : null, {
     plan: payload.plan,
     expiresAt: payload.expiresAt,
     customer: payload.customer,
-    message: '',
     fingerprint,
+    activityId: payload.activityId,
   })
   const r2 = await bridge.cf.put('license', `dev:${input.deviceId}`, devRecord)
   if (!r2.ok) throw new Error(r2.error ?? 'تعذر الكتابة في Cloudflare')
@@ -78,7 +80,7 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   // device log — same shape the devbot appends
   const logKey = `log:${input.deviceId}`
   const prevLog = await bridge.cf.get('license', logKey)
-  const entryText = `${opts.renew ? 'تجديد' : 'تفعيل'} ${payload.plan} حتى ${payload.expiresAt ?? 'مدى الحياة'} — ${payload.customer}`
+  const entryText = `${opts.renew ? 'تجديد' : 'تفعيل'} ${payload.plan} حتى ${payload.expiresAt ?? 'مدى الحياة'} — ${payload.customer}${payload.activityId ? ` — نشاط: ${payload.activityId}` : ''}`
   await bridge.cf.put('license', logKey, appendDeviceLogEntry(prevLog.ok ? prevLog.value : null, entryText))
 
   // بطاقة الاشتراك في مساحة الخدمات (يقرأها worker التطبيق من /subscription)
@@ -91,7 +93,7 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   }
 
   await audit(opts.renew ? 'license_renew' : 'license_issue', input.deviceId, {
-    fingerprint, plan: payload.plan, expiresAt: payload.expiresAt, customer: payload.customer, notes,
+    fingerprint, plan: payload.plan, expiresAt: payload.expiresAt, customer: payload.customer, activityId: payload.activityId ?? null, notes,
   })
   return { key, fingerprint, payload, notes }
 }

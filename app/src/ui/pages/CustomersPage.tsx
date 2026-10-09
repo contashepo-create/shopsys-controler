@@ -8,6 +8,8 @@ import { DEFAULT_BINDING } from '../../core/settings.ts'
 import { Btn, Modal, useToast, EmptyState, Field, Select } from '../components/ui.tsx'
 import { StatusBadge } from './DashboardPage.tsx'
 import { LicenseKeyResult } from '../components/LicenseKeyResult.tsx'
+import { ActivityPicker, isActivityValueValid } from '../components/ActivityPicker.tsx'
+import { activityDisplay, resolveClientActivity } from '../../core/activities.ts'
 
 const STATUS_OPTIONS: { value: CustomerStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'كل الحالات' },
@@ -114,7 +116,9 @@ export function CustomersPage() {
                     {c.email ? <div className="muted" style={{ fontSize: 12 }}>{c.email}</div> : null}
                   </td>
                   <td className="mono">{c.deviceId}</td>
-                  <td>{c.activityId ?? '—'}</td>
+                  <td title={c.clientActivityId && c.activityId && c.clientActivityId !== c.activityId ? `المفتاح الحالي: ${activityDisplay(c.activityId)}` : undefined}>
+                    {activityDisplay(c.clientActivityId ?? c.activityId)}
+                  </td>
                   <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? c.plan ?? '—'}</td>
                   <td className="mono">{c.expiresAt ?? 'مدى الحياة'}</td>
                   <td className="muted">{c.lastActivityAt ?? '—'}</td>
@@ -165,6 +169,8 @@ export function CustomersPage() {
                 <ul className="plain" style={{ fontSize: 13.5 }}>
                   <li>الباقة: <b>{PLAN_LABELS_AR[selected.plan as LicensePlan] ?? selected.plan ?? '—'}</b></li>
                   <li>الانتهاء: <span className="mono">{selected.expiresAt ?? 'مدى الحياة'}</span></li>
+                  <li>نشاط العميل (اختياره): <b>{activityDisplay(selected.clientActivityId)}</b></li>
+                  <li>نشاط المفتاح الحالي: <b>{selected.activityId ? activityDisplay(selected.activityId) : 'أي نشاط'}</b></li>
                   <li>البصمة: <span className="mono">{selected.fingerprint ?? '—'}</span></li>
                   <li>مستخدمون إضافيون: {selected.extraUsers} · فروع إضافية: {selected.extraBranches}</li>
                   <li>رسالة العميل: {selected.message || '—'}</li>
@@ -195,10 +201,11 @@ export function CustomersPage() {
 
       {selected ? (
         <IssueDialog
+          key={`${selected.deviceId}:${renewOpen}`}
           open={renewOpen}
           customer={selected}
           onClose={() => setRenewOpen(false)}
-          onDone={async () => { setRenewOpen(false); await refresh() }}
+          onDone={async () => { await refresh() }}
         />
       ) : null}
     </>
@@ -217,7 +224,10 @@ export function IssueDialog(props: {
   const [customerName, setCustomerName] = useState(c.customer)
   const [plan, setPlan] = useState<LicensePlan>((c.plan as LicensePlan) || 'basic')
   const [days, setDays] = useState('365')
-  const [activityId, setActivityId] = useState(c.activityId ?? '')
+  // النشاط يُكتب تلقائياً كما اختاره العميل، ويبقى قابلاً للتغيير بطلب العميل
+  const initialActivity = resolveClientActivity(c)
+  const [activityId, setActivityId] = useState(initialActivity.id)
+  const [activityCustom, setActivityCustom] = useState(false)
   const [extraUsers, setExtraUsers] = useState(c.extraUsers ? String(c.extraUsers) : '')
   const [extraBranches, setExtraBranches] = useState(c.extraBranches ? String(c.extraBranches) : '')
   const [features, setFeatures] = useState<string[]>([...c.features])
@@ -229,6 +239,7 @@ export function IssueDialog(props: {
     set(list.includes(value) ? list.filter((x) => x !== value) : [...list, value])
 
   async function submit() {
+    if (!isActivityValueValid(activityId)) { toast('معرّف النشاط غير صالح', 'error'); return }
     setBusy(true)
     try {
       const res = await issueForKey({
@@ -262,7 +273,7 @@ export function IssueDialog(props: {
   }
 
   return (
-    <Modal open={props.open} wide title="تجديد وتعديل الاشتراك" sub={c.deviceId} onClose={props.onClose}
+    <Modal open={props.open} wide title={c.status === 'revoked' || c.status === 'expired' || c.status === 'none' ? 'تنشيط العميل — إصدار مفتاح جديد' : 'تجديد وتعديل الاشتراك'} sub={c.deviceId} onClose={props.onClose}
       actions={
         <>
           <Btn onClick={props.onClose}>إلغاء</Btn>
@@ -273,7 +284,8 @@ export function IssueDialog(props: {
         <Field label="اسم العميل" value={customerName} onChange={setCustomerName} />
         <Select label="الخطة" value={plan} onChange={(v) => setPlan(v as LicensePlan)} options={PLAN_OPTIONS} />
         <Field label="مدة الاشتراك (أيام)" value={days} onChange={setDays} dir="ltr" hint="0 أو مدى الحياة باختيار الخطة «مدى الحياة»" />
-        <Field label="النشاط (activityId)" value={activityId} onChange={setActivityId} dir="ltr" placeholder="grocery / pharmacy …" />
+        <ActivityPicker value={activityId} onChange={setActivityId} clientActivityId={c.clientActivityId}
+          source={initialActivity.source} custom={activityCustom} onCustomChange={setActivityCustom} />
         <Field label="مستخدمون إضافيون (+)" value={extraUsers} onChange={setExtraUsers} dir="ltr" />
         <Field label="فروع إضافية (+)" value={extraBranches} onChange={setExtraBranches} dir="ltr" />
       </div>
