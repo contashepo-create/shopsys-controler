@@ -141,7 +141,8 @@ export function collectSentNotices(lists: readonly (readonly [string, string | n
       if (!entry.listKeys.includes(key)) entry.listKeys.push(key)
     }
   }
-  return [...byId.values()].sort((a, b) => b.notice.createdAt.localeCompare(a.notice.createdAt))
+  // createdAt قد يغيب في صيغ قديمة — لا ينهار السجل كله بسببها
+  return [...byId.values()].sort((a, b) => String(b.notice.createdAt ?? '').localeCompare(String(a.notice.createdAt ?? '')))
 }
 
 export interface NoticePatch {
@@ -150,15 +151,28 @@ export interface NoticePatch {
   expiresAt?: string | null
 }
 
+/** القائمة الخام كما هي في KV — التعديل/الحذف لا يُسقط عناصر لا تفهمها اللوحة (صيغ قديمة/أحدث). */
+function rawNoticeArray(raw: string | null): unknown[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw) as unknown
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+const hasId = (n: unknown, id: string): boolean => n != null && typeof n === 'object' && (n as { id?: unknown }).id === id
+
 /** يعدّل إشعاراً داخل قائمة (نفس المعرّف، فيبقى عند العميل نفس الإشعار بنص جديد). */
 export function editNoticeInList(raw: string | null, id: string, patch: NoticePatch, now = new Date()): { raw: string; changed: boolean } {
-  const list = parseNoticeList(raw) as (CloudNotice & { editedAt?: string })[]
+  const list = rawNoticeArray(raw)
   let changed = false
   const next = list.map((n) => {
-    if (n.id !== id) return n
+    if (!hasId(n, id)) return n
     changed = true
     return {
-      ...n,
+      ...(n as object),
       ...(patch.title !== undefined ? { title: patch.title.trim() || 'رسالة من المطوّر' } : {}),
       ...(patch.body !== undefined ? { body: patch.body } : {}),
       ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
@@ -170,8 +184,8 @@ export function editNoticeInList(raw: string | null, id: string, patch: NoticePa
 
 /** يحذف إشعاراً من قائمة. */
 export function removeNoticeFromList(raw: string | null, id: string): { raw: string; changed: boolean } {
-  const list = parseNoticeList(raw)
-  const next = list.filter((n) => n.id !== id)
+  const list = rawNoticeArray(raw)
+  const next = list.filter((n) => !hasId(n, id))
   return { raw: JSON.stringify(next), changed: next.length !== list.length }
 }
 
@@ -180,7 +194,8 @@ export function parseNoticeReads(raw: string | null): Record<string, string> {
   if (!raw) return {}
   try {
     const o = JSON.parse(raw) as unknown
-    const out: Record<string, string> = {}
+    // كائن بلا نموذج أولي: مفاتيح مثل «__proto__» تُحفظ كمفاتيح عادية بلا تلويث
+    const out = Object.create(null) as Record<string, string>
     if (Array.isArray(o)) {
       for (const item of o) {
         if (typeof item === 'string') out[item] = ''
@@ -233,7 +248,7 @@ export function noticeRecipients(
   return ids.map((deviceId) => {
     const c = byId.get(deviceId)
     const reads = readsByDevice.get(deviceId)
-    if (reads && sent.notice.id in reads) return { deviceId, customer: c?.customer ?? '', state: 'read' as const, at: reads[sent.notice.id] || null }
+    if (reads && Object.hasOwn(reads, sent.notice.id)) return { deviceId, customer: c?.customer ?? '', state: 'read' as const, at: reads[sent.notice.id] || null }
     const seen = c?.lastSeenAt ?? null
     if (seen && Date.parse(seen) >= since) return { deviceId, customer: c?.customer ?? '', state: 'delivered' as const, at: seen }
     return { deviceId, customer: c?.customer ?? '', state: 'pending' as const, at: seen }

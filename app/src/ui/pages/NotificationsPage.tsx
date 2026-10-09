@@ -278,12 +278,13 @@ export function NotificationsPage() {
   )
 }
 
-function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSaved: (patch: { title: string; body: string; expiresAt: string }) => void }) {
+function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSaved: (patch: { title: string; body: string; expiresAt?: string }) => void }) {
   const toast = useToast()
   const n = props.notice.notice
   const [title, setTitle] = useState(n.title)
   const [body, setBody] = useState(n.body)
-  const [days, setDays] = useState(String(daysLeft(n.expiresAt) || 30))
+  const initialDays = String(daysLeft(n.expiresAt) || 30)
+  const [days, setDays] = useState(initialDays)
   const [busy, setBusy] = useState(false)
 
   async function save() {
@@ -291,9 +292,11 @@ function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSa
     if (err) { toast(err, 'error'); return }
     setBusy(true)
     try {
-      const patch = {
+      // المدة لم تُلمس (والإشعار غير منتهٍ) → يبقى تاريخ الانتهاء الأصلي كما هو بالضبط
+      const keepExpiry = days.trim() === initialDays && daysLeft(n.expiresAt) > 0
+      const patch: { title: string; body: string; expiresAt?: string } = {
         title: title.trim() || 'رسالة من المطوّر', body,
-        expiresAt: new Date(Date.now() + (Number(days) || 30) * 86400000).toISOString(),
+        ...(keepExpiry ? {} : { expiresAt: new Date(Date.now() + (Number(days) || 30) * 86400000).toISOString() }),
       }
       await editNotice(props.notice, patch)
       toast('✏️ عُدِّل الإشعار — يظهر النص الجديد عند العميل في أول مزامنة', 'ok')

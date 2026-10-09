@@ -63,6 +63,10 @@ Run workflow ← اختر **الوسم** (لا فرعاً) ← Run؛ الفحو�
 - للتشغيل من المصدر: `cd app && npm install && npm run desktop:dev`
 - لبناء المثبّت محلياً على ويندوز: `npm run desktop:dist` (ينتج `app/release/`)
 - بوابات التحقق قبل أي دفعة: `npm run verify:all`
+- الاختبارات (`npm test`) على ثلاث طبقات:
+  - **المنطق النقي** (`tests/logic_exhaustive.test.ts` وغيره): كل التركيبات — كل باقة × كل عدد فروع × كل مجموعة ميزات، وكل نشاط.
+  - **مسارات البيانات** (`tests/actions_flow.test.ts`): Cloudflare KV وهمي في الذاكرة (`tests/helpers/fakeBridge.ts`) مع **الموقِّع الحقيقي** المستخرج من `desktop/main.cjs`، ثم التحقق من المفاتيح بنواة العميل.
+  - **الواجهة** (`tests/ui/*.test.tsx`): نموذج الإصدار وصفحتا العملاء والإشعارات تُرسم في jsdom ويُتعامل معها كمستخدم.
 
 ### متى تحتاج مساحة الخدمات (SHOPSYS_KV)؟
 

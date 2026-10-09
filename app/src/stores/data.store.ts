@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { bridge } from '../data/bridge.ts'
 import { buildCustomerViews, type CustomerView } from '../core/customers.ts'
+import { mapLimit } from '../core/concurrency.ts'
 
 interface DataState {
   customers: CustomerView[]
@@ -14,14 +15,14 @@ interface DataState {
 }
 
 const MAX_KEYS_PER_PREFIX = 2000
+/** أقصى طلبات قراءة متزامنة في التحديث كله — بدل آلاف الطلبات دفعة واحدة */
+export const READ_CONCURRENCY = 12
 
 async function getAllValues(ns: 'license' | 'services', keys: readonly string[]): Promise<(readonly [string, string | null])[]> {
-  const capped = keys.slice(0, MAX_KEYS_PER_PREFIX)
-  const results = await Promise.all(capped.map(async (key) => {
+  return mapLimit(keys, READ_CONCURRENCY, async (key) => {
     const r = await bridge.cf.get(ns, key)
     return [key, r.ok ? r.value : null] as const
-  }))
-  return results
+  })
 }
 
 async function listAll(ns: 'license' | 'services', prefix: string): Promise<string[]> {
@@ -69,18 +70,17 @@ export const useDataStore = create<DataState>((set, get) => ({
       let servicesError: string | null = null
       try {
         chatKeys = await listAll('services', 'chat:')
-        chatEntries = await getAllValues('services', chatKeys)
+        chatEntries = await getAllValues('services', chatKeys.slice(0, MAX_KEYS_PER_PREFIX))
       } catch (e) {
         servicesAvailable = false
         servicesError = e instanceof Error ? e.message : String(e)
       }
 
-      const [devEntries, licEntries, logEntries, emailEntries] = await Promise.all([
-        getAllValues('license', devKeys),
-        getAllValues('license', licKeys),
-        getAllValues('license', logKeys),
-        getAllValues('license', emailKeys),
-      ])
+      // قراءة كل البادئات في طابور واحد — الحد الكلي للتزامن READ_CONCURRENCY وليس لكل بادئة
+      const capped = [devKeys, licKeys, logKeys, emailKeys].map((keys) => keys.slice(0, MAX_KEYS_PER_PREFIX))
+      const values = await getAllValues('license', capped.flat())
+      const bounds = capped.reduce<number[]>((acc, keys) => [...acc, acc[acc.length - 1] + keys.length], [0])
+      const [devEntries, licEntries, logEntries, emailEntries] = capped.map((_, i) => values.slice(bounds[i], bounds[i + 1]))
       let revoked: string[] = []
       try { revoked = revokedRaw.ok && revokedRaw.value ? JSON.parse(revokedRaw.value) as string[] : [] } catch { revoked = [] }
       if (!Array.isArray(revoked)) revoked = []

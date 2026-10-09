@@ -79,7 +79,7 @@ export function parseGlobalDefaults(raw: string | null): GlobalDefaults {
     return {
       plan,
       days: toCount(o.days) || 365,
-      features: Array.isArray(o.features) ? o.features as LicenseFeature[] : [],
+      features: Array.isArray(o.features) ? o.features.filter((f): f is LicenseFeature => typeof f === 'string') : [],
       extraUsers: toCount(o.extraUsers),
       extraBranches: toCount(o.extraBranches),
       extraModules: Array.isArray(o.extraModules) ? o.extraModules.filter((m): m is string => typeof m === 'string') : [],
@@ -95,6 +95,7 @@ export function parseGlobalDefaults(raw: string | null): GlobalDefaults {
  */
 export function defaultRenewDays(expiresAt: string | null, todayIso: string, fallback = 365): number {
   if (!expiresAt) return fallback
-  const left = Math.round((Date.parse(expiresAt + 'T00:00:00Z') - Date.parse(todayIso + 'T00:00:00Z')) / 86400000)
-  return left > 0 ? left : fallback
+  // يقبل «YYYY-MM-DD» أو ISO كاملاً بوقت (بعض السجلات القديمة)
+  const left = Math.round((Date.parse(expiresAt.slice(0, 10) + 'T00:00:00Z') - Date.parse(todayIso.slice(0, 10) + 'T00:00:00Z')) / 86400000)
+  return Number.isFinite(left) && left > 0 ? left : fallback
 }

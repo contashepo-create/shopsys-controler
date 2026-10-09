@@ -70,10 +70,11 @@ export const ACTIVITY_MODULES: Readonly<Record<string, readonly string[]>> = {
 
 /** أقسام النشاط المضمّنة (فارغة لنشاط مجهول أو «أي نشاط»). */
 export function modulesIncludedInActivity(activityId: string | null | undefined): readonly string[] {
-  return (activityId && ACTIVITY_MODULES[activityId]) || []
+  // Object.hasOwn: معرّف مكتوب يدوياً مثل «toString» لا يجوز أن يلتقط خصائص Object
+  return activityId && Object.hasOwn(ACTIVITY_MODULES, activityId) ? ACTIVITY_MODULES[activityId] : []
 }
 
-const LABEL_BY_ID = new Map(ACTIVITY_CATALOG.map((a) => [a.id, a.label]))
+const LABEL_BY_ID: ReadonlyMap<string, string> = new Map(ACTIVITY_CATALOG.map((a) => [a.id, a.label]))
 
 /**
  * معرّف نشاط صالح: 1–64 حرفاً بلا مسافات أو علامات تنصيص.

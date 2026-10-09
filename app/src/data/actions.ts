@@ -18,6 +18,7 @@ import { finalModules, parseGlobalDefaults, type GlobalDefaults } from '../core/
 import { appendChatMessage, parseChat, validateReply } from '../core/support.ts'
 import { sanitizeDetails, type AuditAction } from '../core/audit.ts'
 import { describeTargeting } from '../core/notices.ts'
+import { mapLimit } from '../core/concurrency.ts'
 
 export interface IssueLicenseInput {
   deviceId: string
@@ -61,11 +62,11 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
     ...(input.activityId ? { activityId: input.activityId } : {}),
     ...(modules.length ? { extraModules: modules } : {}),
   }
-  const sign = await bridge.license.sign(JSON.stringify(payload))
-  if (!sign.ok || !sign.key) throw new Error(sign.error ?? 'تعذر توقيع المفتاح — تحقق من المفتاح الخاص في الإعدادات')
-  const key = sign.key
-  const fingerprint = keyFingerprint(key)
   const notes: string[] = []
+  const signed = await signAvoidingRevoked(payload, notes)
+  const key = signed.key
+  const fingerprint = keyFingerprint(key)
+  Object.assign(payload, signed.payload)
 
   const licRecord = JSON.stringify({ payload, key, issuedAt: payload.issuedAt, revoked: false })
   const r1 = await bridge.cf.put('license', `lic:${fingerprint}`, licRecord)
@@ -111,6 +112,61 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
     fingerprint, plan: payload.plan, expiresAt: payload.expiresAt, customer: payload.customer, activityId: payload.activityId ?? null, notes,
   })
   return { key, fingerprint, payload, notes }
+}
+
+async function readRevokedSet(): Promise<Set<string>> {
+  const out = new Set<string>()
+  for (const ns of ['license', 'services'] as const) {
+    try {
+      const r = await bridge.cf.get(ns, 'revoked')
+      const list = r.ok && r.value ? JSON.parse(r.value) as unknown : []
+      if (Array.isArray(list)) for (const fp of list) if (typeof fp === 'string') out.add(fp)
+    } catch { /* قائمة تالفة = لا شيء محروق فيها */ }
+  }
+  return out
+}
+
+/**
+ * التوقيع مع تجنّب «المفتاح المولود محروقاً»: Ed25519 حتمي — نفس الحمولة تعطي نفس المفتاح
+ * ونفس البصمة. فلو أُعيد تنشيط عميل معطّل بنفس البيانات في نفس يوم إصدار مفتاحه المحروق،
+ * لخرج نفس المفتاح المحروق. عندها نغيّر الحمولة تغييراً لا يضر العميل ونعيد التوقيع:
+ *   • اشتراك بتاريخ → تمديد يوم واحد
+ *   • مدى الحياة → إضافة حقل اختياري بقيمة صفر (نفس الحدود تماماً، حمولة مختلفة)
+ */
+async function signAvoidingRevoked(base: LicensePayload, notes: string[]): Promise<{ key: string; payload: LicensePayload }> {
+  const signOnce = async (p: LicensePayload) => {
+    const sign = await bridge.license.sign(JSON.stringify(p))
+    if (!sign.ok || !sign.key) throw new Error(sign.error ?? 'تعذر توقيع المفتاح — تحقق من المفتاح الخاص في الإعدادات')
+    return sign.key
+  }
+  let payload = base
+  let key = await signOnce(payload)
+  const revoked = await readRevokedSet()
+  if (!revoked.has(keyFingerprint(key))) return { key, payload }
+
+  const variants: LicensePayload[] = []
+  if (base.expiresAt) {
+    for (let extra = 1; extra <= 7; extra++) {
+      const d = new Date(base.expiresAt + 'T00:00:00Z')
+      d.setUTCDate(d.getUTCDate() + extra)
+      variants.push({ ...base, expiresAt: d.toISOString().slice(0, 10) })
+    }
+  } else {
+    if (base.extraUsers == null) variants.push({ ...base, extraUsers: 0 })
+    if (base.extraBranches == null) variants.push({ ...base, extraBranches: 0 })
+    if (base.extraUsers == null && base.extraBranches == null) variants.push({ ...base, extraUsers: 0, extraBranches: 0 })
+  }
+  for (const v of variants) {
+    payload = v
+    key = await signOnce(payload)
+    if (!revoked.has(keyFingerprint(key))) {
+      notes.push(payload.expiresAt !== base.expiresAt
+        ? `البيانات مطابقة لمفتاح محروق سابق (نفس اليوم) — مُدّد الاشتراك حتى ${payload.expiresAt} ليصدر مفتاح جديد غير محروق`
+        : 'البيانات مطابقة لمفتاح محروق سابق — صدر مفتاح مختلف بنفس الحدود تماماً')
+      return { key, payload }
+    }
+  }
+  throw new Error('كل صيغ المفتاح لهذه البيانات محروقة — غيّر المدة أو الباقة ثم أعد الإصدار')
 }
 
 /** Burn a license: add the fingerprint to the revocation list (both namespaces) + flag the record. */
@@ -344,16 +400,10 @@ export async function listSentNotices(): Promise<SentNoticesResult> {
   }
   const [noticeKeys, readKeys] = await Promise.all([listKeys(NOTICE_KEY_PREFIX), listKeys(NOTICE_READ_PREFIX).catch(() => [] as string[])])
   // قراءة على دفعات (8 طلبات متزامنة) — حتى لا نصطدم بحد طلبات Cloudflare API مع كثرة العملاء
-  const fetchAll = async (keys: string[]) => {
-    const out: (readonly [string, string | null])[] = []
-    for (let i = 0; i < keys.length; i += 8) {
-      out.push(...await Promise.all(keys.slice(i, i + 8).map(async (k) => {
-        const r = await bridge.cf.get('license', k)
-        return [k, r.ok ? r.value : null] as const
-      })))
-    }
-    return out
-  }
+  const fetchAll = (keys: string[]) => mapLimit(keys, 8, async (k) => {
+    const r = await bridge.cf.get('license', k)
+    return [k, r.ok ? r.value : null] as const
+  })
   const lists = await fetchAll(noticeKeys)
   const reads = await fetchAll(readKeys)
   const readsByDevice = new Map<string, Record<string, string>>()
