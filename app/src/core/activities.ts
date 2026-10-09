@@ -39,6 +39,40 @@ export const ACTIVITY_CATALOG: readonly ActivityDef[] = [
   { id: 'general', label: 'نشاط تجاري عام' },
 ]
 
+/**
+ * الأقسام المضمّنة أصلاً في كل نشاط — لا تُعرض في «إضافة قسم» حتى لا يُرسَل للعميل قسم عنده.
+ * ⚠️ يجب أن تطابق تعريف الأنشطة في تطبيق تَحَكَّم (عقد «إضافة قسم خارج النشاط»).
+ * لو احتجت قسماً مخفياً هنا: زر «إظهار كل الأقسام» في نموذج الإصدار.
+ */
+export const ACTIVITY_MODULES: Readonly<Record<string, readonly string[]>> = {
+  grocery: ['pos', 'inventory', 'purchases'],
+  pharmacy: ['pos', 'inventory', 'purchases'],
+  restaurant: ['pos', 'inventory', 'purchases', 'recipes'],
+  clothing: ['pos', 'inventory', 'purchases'],
+  electronics: ['pos', 'inventory', 'purchases'],
+  jewelry: ['pos', 'inventory', 'purchases', 'jewelry'],
+  maintenance: ['pos', 'inventory', 'maintenance'],
+  laundry: ['pos', 'laundry'],
+  clinic: ['clinic', 'booking'],
+  lab: ['lab', 'booking'],
+  cars: ['pos', 'inventory', 'purchases', 'cars'],
+  realestate: ['realestate', 'installments'],
+  contracting: ['contracting', 'purchases', 'inventory'],
+  logistics: ['logistics'],
+  equipment_rental: ['equipment_rental', 'inventory'],
+  booking: ['booking', 'pos'],
+  wallet_services: ['wallet_services', 'pos'],
+  factory: ['processing', 'inventory', 'purchases'],
+  wholesale: ['pos', 'inventory', 'purchases'],
+  building_materials: ['pos', 'inventory', 'purchases'],
+  general: ['pos', 'inventory', 'purchases'],
+}
+
+/** أقسام النشاط المضمّنة (فارغة لنشاط مجهول أو «أي نشاط»). */
+export function modulesIncludedInActivity(activityId: string | null | undefined): readonly string[] {
+  return (activityId && ACTIVITY_MODULES[activityId]) || []
+}
+
 const LABEL_BY_ID = new Map(ACTIVITY_CATALOG.map((a) => [a.id, a.label]))
 
 /** معرّف نشاط صالح: حروف لاتينية صغيرة وأرقام و _ و - (نفس شكل معرّفات التطبيق). */

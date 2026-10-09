@@ -57,6 +57,12 @@ export interface CustomerView {
   extraBranches: number
   extraModules: string[]
   fingerprint: string | null
+  /** المفتاح الموقّع الحالي (من lic:<fingerprint>) — لإعادة نسخه أو إرساله للعميل */
+  licenseKey: string | null
+  /** تاريخ إصدار المفتاح الحالي */
+  licenseIssuedAt: string | null
+  /** آخر اتصال للتطبيق بالسحابة (dev:<deviceId>.lastSeenAt يكتبه الـ worker) */
+  lastSeenAt: string | null
   status: CustomerStatus
   lastActivityAt: string | null
   lastSupportAt: string | null
@@ -200,6 +206,9 @@ export function buildCustomerViews(input: BuildViewsInput): CustomerView[] {
       extraBranches: payload?.extraBranches ?? 0,
       extraModules: payload?.extraModules ?? [],
       fingerprint,
+      licenseKey: lic?.key ?? null,
+      licenseIssuedAt: lic?.issuedAt ?? payload?.issuedAt ?? null,
+      lastSeenAt: typeof dev.lastSeenAt === 'string' ? dev.lastSeenAt : null,
       status: computeStatus({ plan, expiresAt: expiresAt ?? null, revokedFingerprint, todayIso: input.todayIso }),
       lastActivityAt: log?.length ? log[log.length - 1].at : null,
       lastSupportAt,

@@ -8,8 +8,13 @@ import {
   expiresAfterDays, keyFingerprint, canonicalPayload,
   type LicenseFeature, type LicensePayload, type LicensePlan,
 } from '../core/license.ts'
-import { appendDeviceLogEntry, mergeDevRecord, type CustomerView } from '../core/customers.ts'
-import { appendNotice, buildNotice, resolveTargetDevices, validateNoticeBody, type NoticeTargeting } from '../core/notices.ts'
+import { appendDeviceLogEntry, buildCustomerViews, mergeDevRecord, type CustomerView } from '../core/customers.ts'
+import {
+  appendNotice, buildNotice, resolveTargetDevices, validateNoticeBody, collectSentNotices, editNoticeInList,
+  removeNoticeFromList, parseNoticeReads, NOTICE_KEY_PREFIX, NOTICE_READ_PREFIX,
+  type NoticeTargeting, type NoticePatch, type SentNotice,
+} from '../core/notices.ts'
+import { finalModules, parseGlobalDefaults, type GlobalDefaults } from '../core/issueForm.ts'
 import { appendChatMessage, parseChat, validateReply } from '../core/support.ts'
 import { sanitizeDetails, type AuditAction } from '../core/audit.ts'
 import { describeTargeting } from '../core/notices.ts'
@@ -41,19 +46,20 @@ export async function audit(action: AuditAction, target?: string, details?: Reco
 }
 
 /** Sign a license locally (main process holds the private key) and upload the records to KV. */
-export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boolean } = {}): Promise<IssueLicenseResult> {
+export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boolean; burnFingerprint?: string | null } = {}): Promise<IssueLicenseResult> {
+  const modules = finalModules(input.extraModules ?? [])
   const payload: LicensePayload = {
     v: 1,
     deviceId: input.deviceId,
     customer: input.customer,
     plan: input.plan,
-    features: input.features,
+    features: [...new Set(input.features)],
     issuedAt: new Date().toISOString().slice(0, 10),
     expiresAt: input.plan === 'lifetime' ? null : expiresAfterDays(input.days),
     ...(input.extraUsers ? { extraUsers: input.extraUsers } : {}),
     ...(input.extraBranches ? { extraBranches: input.extraBranches } : {}),
     ...(input.activityId ? { activityId: input.activityId } : {}),
-    ...(input.extraModules?.length ? { extraModules: input.extraModules } : {}),
+    ...(modules.length ? { extraModules: modules } : {}),
   }
   const sign = await bridge.license.sign(JSON.stringify(payload))
   if (!sign.ok || !sign.key) throw new Error(sign.error ?? 'تعذر توقيع المفتاح — تحقق من المفتاح الخاص في الإعدادات')
@@ -87,9 +93,18 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   // أفضل جهد: غياب مساحة الخدمات لا يجوز أن يُلغي مفتاحاً صدر فعلاً في مساحة التراخيص
   const subMirror = await bridge.cf.put('services', `sub:${input.deviceId}`, JSON.stringify({
     plan: payload.plan, expiresAt: payload.expiresAt, message: '', customer: payload.customer, issuedAt: payload.issuedAt,
+    // المفتاح نفسه مربوط بالجهاز (لا يعمل على غيره) — متاح للتطبيق ليطبّقه تلقائياً عند المزامنة
+    key, fingerprint,
   }))
   if (!subMirror.ok) {
     notes.push(subMirror.code === 'ns_missing' ? 'لم تُحدَّث بطاقة الاشتراك السحابية: مساحة الخدمات غير مضبوطة' : `لم تُحدَّث بطاقة الاشتراك: ${subMirror.error ?? ''}`)
+  }
+
+  // حرق المفتاح السابق (اختياري) — بعد نجاح الإصدار فقط، وليس نفس البصمة الجديدة
+  if (opts.burnFingerprint && opts.burnFingerprint !== fingerprint) {
+    try { await revokeLicense(opts.burnFingerprint) } catch (e) {
+      notes.push(`صدر المفتاح الجديد لكن تعذر حرق القديم: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   await audit(opts.renew ? 'license_renew' : 'license_issue', input.deviceId, {
@@ -256,3 +271,112 @@ export function previewPayload(input: IssueLicenseInput): LicensePayload {
 }
 
 export { canonicalPayload }
+
+/* ─── الإصدار: البحث عن الجهاز + الافتراضيات + إرسال المفتاح ─── */
+
+/**
+ * يقرأ عميلاً واحداً مباشرة من KV بمعرّف جهازه (بلا انتظار تحميل كل العملاء) —
+ * لكتابة اسمه ونشاطه وأقسامه تلقائياً في نموذج الإصدار.
+ */
+export async function lookupDevice(deviceId: string): Promise<CustomerView | null> {
+  const dev = await bridge.cf.get('license', `dev:${deviceId}`)
+  if (!dev.ok || !dev.value) return null
+  let fingerprint: string | undefined
+  try { fingerprint = (JSON.parse(dev.value) as { fingerprint?: string }).fingerprint } catch { /* ignore */ }
+  const [lic, revokedRaw] = await Promise.all([
+    fingerprint ? bridge.cf.get('license', `lic:${fingerprint}`) : Promise.resolve({ ok: true, value: null } as const),
+    bridge.cf.get('license', 'revoked'),
+  ])
+  let revoked: string[] = []
+  try { revoked = revokedRaw.ok && revokedRaw.value ? JSON.parse(revokedRaw.value) as string[] : [] } catch { revoked = [] }
+  const views = buildCustomerViews({
+    devEntries: [[deviceId, dev.value]],
+    licEntries: fingerprint ? [[fingerprint, lic.ok ? lic.value : null]] : [],
+    logEntries: [], emailEntries: [], chatEntries: [],
+    revoked: Array.isArray(revoked) ? revoked : [],
+    todayIso: new Date().toISOString().slice(0, 10),
+  })
+  return views[0] ?? null
+}
+
+/** settings:global — افتراضيات الرخص الجديدة (نفس شكل البوت). */
+export async function readGlobalDefaults(): Promise<GlobalDefaults> {
+  const r = await bridge.cf.get('license', 'settings:global')
+  return parseGlobalDefaults(r.ok ? r.value : null)
+}
+
+/** يرسل المفتاح للعميل داخل تطبيقه (إشعار خاص بجهازه فقط) — المفتاح لا يعمل على أي جهاز آخر. */
+export async function sendKeyToCustomer(input: { deviceId: string; customer: string; key: string; fingerprint: string; summary?: string }): Promise<void> {
+  const body = [
+    `مرحباً ${input.customer || ''} 👋`.trim(),
+    input.summary ? `تم تحديث اشتراكك: ${input.summary}` : 'تم إصدار مفتاح تفعيل جديد لجهازك.',
+    'لتطبيقه: افتح شاشة الترخيص / التفعيل في البرنامج والصق المفتاح التالي:',
+    input.key,
+    'المفتاح خاص بجهازك ولا يعمل على أي جهاز آخر.',
+  ].join('\n\n')
+  const notice = buildNotice({ title: '🔑 مفتاح التفعيل الجديد', body, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString() })
+  const key = `notices:${input.deviceId}`
+  const cur = await bridge.cf.get('license', key)
+  const r = await bridge.cf.put('license', key, appendNotice(cur.ok ? cur.value : null, notice))
+  if (!r.ok) throw new Error(r.error ?? 'تعذر الكتابة في Cloudflare')
+  await audit('license_send', input.deviceId, { fingerprint: input.fingerprint })
+}
+
+/* ─── سجل الإشعارات: عرض كامل + تعديل + حذف + إيصالات القراءة ─── */
+
+export interface SentNoticesResult {
+  notices: SentNotice[]
+  readsByDevice: Map<string, Record<string, string>>
+}
+
+/** كل الإشعارات المرسلة (العامة وكل الأجهزة — بلا عيّنات) + إيصالات القراءة. */
+export async function listSentNotices(): Promise<SentNoticesResult> {
+  const listKeys = async (prefix: string) => {
+    const all: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await bridge.cf.listKeys('license', prefix, cursor)
+      if (!page.ok) throw new Error(page.error ?? 'تعذر قراءة Cloudflare')
+      all.push(...page.keys)
+      cursor = page.cursor ?? undefined
+    } while (cursor && all.length < 3000)
+    return all
+  }
+  const [noticeKeys, readKeys] = await Promise.all([listKeys(NOTICE_KEY_PREFIX), listKeys(NOTICE_READ_PREFIX).catch(() => [] as string[])])
+  const fetchAll = (keys: string[]) => Promise.all(keys.map(async (k) => {
+    const r = await bridge.cf.get('license', k)
+    return [k, r.ok ? r.value : null] as const
+  }))
+  const [lists, reads] = await Promise.all([fetchAll(noticeKeys), fetchAll(readKeys)])
+  const readsByDevice = new Map<string, Record<string, string>>()
+  for (const [k, raw] of reads) readsByDevice.set(k.slice(NOTICE_READ_PREFIX.length), parseNoticeReads(raw))
+  return { notices: collectSentNotices(lists), readsByDevice }
+}
+
+/** تعديل إشعار في كل القوائم التي يوجد فيها (نفس المعرّف). */
+export async function editNotice(sent: SentNotice, patch: NoticePatch): Promise<void> {
+  if (patch.body !== undefined) {
+    const err = validateNoticeBody(patch.body)
+    if (err) throw new Error(err)
+  }
+  for (const key of sent.listKeys) {
+    const cur = await bridge.cf.get('license', key)
+    const { raw, changed } = editNoticeInList(cur.ok ? cur.value : null, sent.notice.id, patch)
+    if (!changed) continue
+    const r = await bridge.cf.put('license', key, raw)
+    if (!r.ok) throw new Error(r.error ?? 'تعذر الكتابة في Cloudflare')
+  }
+  await audit('notice_edit', sent.notice.id, { title: patch.title ?? sent.notice.title, lists: sent.listKeys.length })
+}
+
+/** حذف إشعار من كل القوائم — يختفي من تطبيق العميل عند أول مزامنة. */
+export async function deleteNotice(sent: SentNotice): Promise<void> {
+  for (const key of sent.listKeys) {
+    const cur = await bridge.cf.get('license', key)
+    const { raw, changed } = removeNoticeFromList(cur.ok ? cur.value : null, sent.notice.id)
+    if (!changed) continue
+    const r = await bridge.cf.put('license', key, raw)
+    if (!r.ok) throw new Error(r.error ?? 'تعذر الكتابة في Cloudflare')
+  }
+  await audit('notice_delete', sent.notice.id, { title: sent.notice.title, lists: sent.listKeys.length })
+}

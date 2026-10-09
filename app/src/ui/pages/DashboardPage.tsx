@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Users, KeyRound, BellRing, Headset, Flame, Clock } from 'lucide-react'
+import { KeyRound, BellRing } from 'lucide-react'
 import { useDataStore } from '../../stores/data.store.ts'
 import { STATUS_LABELS_AR } from '../../core/customers.ts'
 import { PLAN_LABELS_AR, type LicensePlan } from '../../core/license.ts'
@@ -9,7 +9,7 @@ import { isDesktop } from '../../data/bridge.ts'
 
 export function DashboardPage() {
   const navigate = useNavigate()
-  const { customers, lastSyncAt, error } = useDataStore()
+  const { customers, error } = useDataStore()
 
   const kpis = useMemo(() => {
     const active = customers.filter((c) => c.status === 'active').length
@@ -21,7 +21,7 @@ export function DashboardPage() {
   }, [customers])
 
   const recent = useMemo(
-    () => [...customers].sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '')).slice(0, 8),
+    () => [...customers].sort((a, b) => (b.lastSeenAt ?? b.lastActivityAt ?? '').localeCompare(a.lastSeenAt ?? a.lastActivityAt ?? '')).slice(0, 8),
     [customers],
   )
 
@@ -46,19 +46,19 @@ export function DashboardPage() {
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--warn)' }}>{kpis.expiring}</div><div className="kpi-label">قرب الانتهاء (٧ أيام)</div></div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--danger)' }}>{kpis.expired}</div><div className="kpi-label">منتهٍ</div></div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--danger)' }}>{kpis.revoked}</div><div className="kpi-label">محروق</div></div>
-        <div className="kpi"><div className="kpi-value" style={{ color: 'var(--accent-2)' }}>{kpis.support}</div><div className="kpi-label">تذاكر دعم</div></div>
+        <div className="kpi"><div className="kpi-value" style={{ color: 'var(--accent-2)' }}>{kpis.support}</div><div className="kpi-label">عملاء راسلوا الدعم</div></div>
       </div>
 
       <div className="grid-2" style={{ alignItems: 'start' }}>
         <div className="card">
-          <div className="card-title">🕘 آخر نشاط للعملاء</div>
+          <div className="card-title">🕘 آخر ظهور للعملاء</div>
           {recent.length === 0 ? (
             <EmptyState icon="👥" text="لا يوجد عملاء بعد" hint="ابدأ بإصدار مفتاح من صفحة التراخيص" />
           ) : (
             <div className="table-wrap">
               <table className="table">
                 <thead>
-                  <tr><th>العميل</th><th>الباقة</th><th>الحالة</th><th>آخر نشاط</th></tr>
+                  <tr><th>العميل</th><th>الباقة</th><th>الحالة</th><th>آخر ظهور</th></tr>
                 </thead>
                 <tbody>
                   {recent.map((c) => (
@@ -69,7 +69,7 @@ export function DashboardPage() {
                       </td>
                       <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? c.plan ?? '—'}</td>
                       <td><StatusBadge status={c.status} /></td>
-                      <td className="muted">{c.lastActivityAt ?? '—'}</td>
+                      <td className="muted">{(c.lastSeenAt ?? c.lastActivityAt ?? '—').slice(0, 16).replace('T', ' ')}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -102,19 +102,10 @@ export function DashboardPage() {
           <div className="row">
             <button className="btn btn-sm" onClick={() => navigate('/licenses')}><KeyRound size={14} /> إصدار مفتاح</button>
             <button className="btn btn-sm" onClick={() => navigate('/notifications')}><BellRing size={14} /> إرسال إشعار</button>
-            <button className="btn btn-sm" onClick={() => navigate('/support')}><Headset size={14} /> الدعم</button>
-            <button className="btn btn-sm" onClick={() => navigate('/customers')}><Users size={14} /> العملاء</button>
           </div>
         </div>
       </div>
 
-      <div className="card" style={{ marginBlockStart: 16 }}>
-        <div className="card-title">🔗 حالة الربط</div>
-        <div className="row">
-          <Badge kind="ok"><Flame size={12} /> البوت يعمل على نفس الـ KV — اللوحة لا تعطّله</Badge>
-          <Badge kind="accent"><Clock size={12} /> آخر مزامنة: {lastSyncAt?.slice(11, 19) ?? '—'}</Badge>
-        </div>
-      </div>
     </>
   )
 }

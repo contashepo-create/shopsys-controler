@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
-import { bridge } from '../../data/bridge.ts'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDataStore } from '../../stores/data.store.ts'
-import { sendNotice } from '../../data/actions.ts'
-import { parseNoticeList, describeTargeting, validateNoticeBody, type NoticeTargeting, type CloudNotice } from '../../core/notices.ts'
-import { Btn, Field, Textarea, useToast, Badge, EmptyState, Modal } from '../components/ui.tsx'
+import { deleteNotice, editNotice, listSentNotices, sendNotice } from '../../data/actions.ts'
+import {
+  customerActivity, describeTargeting, noticeRecipients, summarizeRecipients, validateNoticeBody, READ_STATE_LABELS_AR,
+  type NoticeTargeting, type SentNotice, type NoticeReadState,
+} from '../../core/notices.ts'
+import { Btn, Field, Textarea, useToast, Badge, EmptyState, Modal, ConfirmDialog } from '../components/ui.tsx'
 import { activityLabel } from '../../core/activities.ts'
 
 type TargetType = 'all' | 'device' | 'group' | 'activity'
+
+const fmt = (iso: string | null | undefined) => (iso ? iso.slice(0, 16).replace('T', ' ') : '—')
+const daysLeft = (iso: string | null) => (iso ? Math.max(0, Math.ceil((Date.parse(iso) - Date.now()) / 86400000)) : 0)
+const STATE_BADGE: Record<NoticeReadState, 'ok' | 'accent' | 'muted'> = { read: 'ok', delivered: 'accent', pending: 'muted' }
 
 export function NotificationsPage() {
   const toast = useToast()
@@ -19,14 +25,34 @@ export function NotificationsPage() {
   const [body, setBody] = useState('')
   const [expiresDays, setExpiresDays] = useState('90')
   const [busy, setBusy] = useState(false)
-  const [history, setHistory] = useState<CloudNotice[]>([])
-  const [historyOpen, setHistoryOpen] = useState(false)
 
-  useEffect(() => { void refresh() }, [refresh])
+  const [sent, setSent] = useState<SentNotice[]>([])
+  const [reads, setReads] = useState<Map<string, Record<string, string>>>(new Map())
+  const [loadingSent, setLoadingSent] = useState(false)
+  const [editing, setEditing] = useState<SentNotice | null>(null)
+  const [deleting, setDeleting] = useState<SentNotice | null>(null)
+  const [viewing, setViewing] = useState<SentNotice | null>(null)
+
+  const loadSent = useCallback(async () => {
+    setLoadingSent(true)
+    try {
+      const res = await listSentNotices()
+      setSent(res.notices)
+      setReads(res.readsByDevice)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    }
+    setLoadingSent(false)
+  }, [toast])
+
+  useEffect(() => { void refresh(); void loadSent() }, [refresh, loadSent])
 
   const activities = useMemo(() => {
     const set = new Map<string, number>()
-    for (const c of customers) if (c.activityId) set.set(c.activityId, (set.get(c.activityId) ?? 0) + 1)
+    for (const c of customers) {
+      const a = customerActivity(c)
+      if (a) set.set(a, (set.get(a) ?? 0) + 1)
+    }
     return [...set.entries()].sort((a, b) => b[1] - a[1])
   }, [customers])
 
@@ -40,29 +66,6 @@ export function NotificationsPage() {
   }, [targetType, deviceId, group, activity])
 
   const preview = useMemo(() => describeTargeting(targeting, customers), [targeting, customers])
-  const affected = useMemo(() => {
-    if (targetType === 'all') return customers.length
-    if (targetType === 'device') return deviceId ? 1 : 0
-    if (targetType === 'group') return group.length
-    return customers.filter((c) => c.activityId === activity).length
-  }, [targetType, deviceId, group, activity, customers])
-
-  async function loadHistory() {
-    const [globalRaw, ...rest] = await Promise.all([
-      bridge.cf.get('license', 'notices:global'),
-    ])
-    let list = parseNoticeList(globalRaw.ok ? globalRaw.value : null)
-    // sample a few per-device lists for recent history
-    for (const c of customers.slice(0, 30)) {
-      const r = await bridge.cf.get(`license`, `notices:${c.deviceId}`)
-      if (r.ok && r.value) list = [...list, ...parseNoticeList(r.value)]
-    }
-    void rest
-    const unique = new Map<string, CloudNotice>()
-    for (const n of list) unique.set(n.id, n)
-    setHistory([...unique.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 60))
-    setHistoryOpen(true)
-  }
 
   async function send() {
     const err = validateNoticeBody(body)
@@ -82,17 +85,35 @@ export function NotificationsPage() {
       })
       toast(`✅ تم الإرسال — ${preview} (${res.targets} جهاز)`, 'ok')
       setBody(''); setTitle('')
+      await loadSent()
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'error')
     }
     setBusy(false)
   }
 
+  async function doDelete(n: SentNotice) {
+    setDeleting(null)
+    setBusy(true)
+    try {
+      await deleteNotice(n)
+      toast('🗑️ حُذف الإشعار — يختفي من تطبيق العميل عند أول مزامنة', 'ok')
+      await loadSent()
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
+  const audience = (n: SentNotice) => (n.scope === 'global' ? 'جميع العملاء' : n.deviceIds.length === 1
+    ? (customers.find((c) => c.deviceId === n.deviceIds[0])?.customer || n.deviceIds[0])
+    : `${n.deviceIds.length} عميل`)
+
+  const hasAnyReceipts = reads.size > 0
+
   return (
     <>
       <div className="grid-2" style={{ alignItems: 'start' }}>
         <div className="card">
-          <div className="card-title">🎯 استهداف الإشعار</div>
+          <div className="card-title">🎯 إلى من؟</div>
           <div className="row" style={{ marginBlockEnd: 12 }}>
             <Btn size="sm" kind={targetType === 'all' ? 'primary' : 'default'} onClick={() => setTargetType('all')}>الكل</Btn>
             <Btn size="sm" kind={targetType === 'device' ? 'primary' : 'default'} onClick={() => setTargetType('device')}>عميل واحد</Btn>
@@ -101,12 +122,12 @@ export function NotificationsPage() {
           </div>
 
           {targetType === 'device' ? (
-            <SelectCustom
-              value={deviceId}
-              onChange={setDeviceId}
-              options={customers.map((c) => ({ value: c.deviceId, label: `${c.customer || '—'} (${c.deviceId})` }))}
-              placeholder="— اختر عميلاً —"
-            />
+            <div className="field">
+              <select className="select" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+                <option value="">— اختر عميلاً —</option>
+                {customers.map((c) => <option key={c.deviceId} value={c.deviceId}>{c.customer || '—'} ({c.deviceId})</option>)}
+              </select>
+            </div>
           ) : null}
 
           {targetType === 'group' ? (
@@ -137,61 +158,144 @@ export function NotificationsPage() {
           ) : null}
 
           <div className="hr" />
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <span className="muted">سيصل إلى: <b>{preview}</b></span>
-            <Badge kind="accent">{affected} جهاز</Badge>
-          </div>
-          <div className="hr" />
-          <Btn onClick={() => void loadHistory()}>🕘 سجل الإشعارات المرسلة</Btn>
+          <span className="muted">سيصل إلى: <b>{preview}</b></span>
         </div>
 
         <div className="card">
           <div className="card-title">✍️ نص الإشعار</div>
           <Field label="العنوان (اختياري)" value={title} onChange={setTitle} placeholder="رسالة من المطوّر" />
-          <Textarea label="النص *" value={body} onChange={setBody} rows={6} placeholder="مثال: تم إصدار تحديث جديد — برجاء إعادة تشغيل البرنامج…" />
+          <Textarea label="النص *" value={body} onChange={setBody} rows={5} placeholder="مثال: تم إصدار تحديث جديد — برجاء إعادة تشغيل البرنامج…" />
           <Field label="مدة العرض (أيام)" value={expiresDays} onChange={setExpiresDays} dir="ltr" hint="يختفي تلقائياً بعدها عند العميل" />
-          <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>
-            يُكتب في <span className="mono">notices:global</span> للجميع، أو <span className="mono">notices:&lt;deviceId&gt;</span> لكل جهاز —
-            والتطبيق يدمج القائمتين كما يفعل البوت.
-          </div>
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <Btn kind="primary" disabled={busy || !body.trim()} onClick={() => void send()}>{busy ? 'جارٍ الإرسال…' : 'إرسال الإشعار'}</Btn>
           </div>
         </div>
       </div>
 
-      <Modal open={historyOpen} wide title="سجل الإشعارات المرسلة" sub="آخر 60 إشعاراً من القسم العام وعينات الأجهزة" onClose={() => setHistoryOpen(false)}>
-        {history.length === 0 ? <EmptyState icon="🔔" text="لا إشعارات مرسلة بعد" /> : (
+      <div className="card" style={{ marginBlockStart: 16 }}>
+        <div className="row" style={{ justifyContent: 'space-between', marginBlockEnd: 10 }}>
+          <div className="card-title" style={{ margin: 0 }}>📬 الإشعارات المرسلة ({sent.length})</div>
+          <Btn size="sm" onClick={() => void loadSent()} disabled={loadingSent}>{loadingSent ? '…' : 'تحديث'}</Btn>
+        </div>
+        {sent.length === 0 ? (
+          <EmptyState icon="🔔" text={loadingSent ? 'جارٍ التحميل…' : 'لا إشعارات مرسلة'} />
+        ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>العنوان</th><th>النص</th><th>أُرسل</th><th>ينتهي</th></tr></thead>
+              <thead><tr><th>الإشعار</th><th>إلى</th><th>أُرسل</th><th>ينتهي</th><th>القراءة</th><th>إجراءات</th></tr></thead>
               <tbody>
-                {history.map((n) => (
-                  <tr key={n.id}>
-                    <td>{n.title}</td>
-                    <td style={{ maxInlineSize: 380 }}>{n.body.length > 120 ? n.body.slice(0, 120) + '…' : n.body}</td>
-                    <td className="muted">{n.createdAt.slice(0, 16).replace('T', ' ')}</td>
-                    <td className="muted">{(n.expiresAt ?? '').slice(0, 10) || '—'}</td>
-                  </tr>
-                ))}
+                {sent.map((n) => {
+                  const sum = summarizeRecipients(noticeRecipients(n, customers, reads))
+                  const expired = n.notice.expiresAt != null && Date.parse(n.notice.expiresAt) < Date.now()
+                  return (
+                    <tr key={n.notice.id}>
+                      <td style={{ maxInlineSize: 360 }}>
+                        <div style={{ fontWeight: 700 }}>
+                          {n.notice.title} {n.notice.editedAt ? <Badge kind="muted">معدّل</Badge> : null} {expired ? <Badge kind="danger">منتهٍ</Badge> : null}
+                        </div>
+                        <div className="muted" style={{ fontSize: 12.5 }}>{n.notice.body.length > 110 ? n.notice.body.slice(0, 110) + '…' : n.notice.body}</div>
+                      </td>
+                      <td>{audience(n)}</td>
+                      <td className="muted">{fmt(n.notice.createdAt)}</td>
+                      <td className="muted">{fmt(n.notice.expiresAt)}</td>
+                      <td>
+                        <button type="button" className="btn btn-ghost btn-sm read-bar" onClick={() => setViewing(n)} title="عرض المستلمين">
+                          <span style={{ color: 'var(--ok)' }}>✅ {sum.read}</span>
+                          <span style={{ color: 'var(--accent)' }}>📥 {sum.delivered}</span>
+                          <span className="muted">⏳ {sum.pending}</span>
+                        </button>
+                      </td>
+                      <td>
+                        <div className="row">
+                          <Btn size="sm" onClick={() => setEditing(n)}>✏️ تعديل</Btn>
+                          <Btn size="sm" kind="danger" disabled={busy} onClick={() => setDeleting(n)}>🗑️ حذف</Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
+        <div className="muted" style={{ fontSize: 12, marginBlockStart: 8 }}>
+          ✅ قرأه · 📥 وصله (فتح التطبيق بعد الإرسال) · ⏳ لم يصله بعد — اضغط على الأرقام لمعرفة الأسماء.
+        </div>
+      </div>
+
+      {editing ? <EditNoticeDialog notice={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await loadSent() }} /> : null}
+
+      <ConfirmDialog
+        open={deleting != null}
+        title="حذف الإشعار"
+        message={`سيُحذف «${deleting?.notice.title ?? ''}» من ${deleting ? audience(deleting) : ''} ويختفي من تطبيقاتهم عند أول مزامنة.`}
+        confirmText="🗑️ حذف"
+        danger
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => { if (deleting) void doDelete(deleting) }}
+      />
+
+      <Modal open={viewing != null} wide title={`من قرأ «${viewing?.notice.title ?? ''}»؟`} sub={viewing ? `أُرسل ${fmt(viewing.notice.createdAt)} إلى ${audience(viewing)}` : ''} onClose={() => setViewing(null)}>
+        {viewing ? (
+          <>
+            {!hasAnyReceipts ? (
+              <div className="notice notice-warn" style={{ display: 'block', marginBlockEnd: 10 }}>
+                لم يصل أي إيصال قراءة بعد. «قرأه» يظهر عندما يبلّغ تطبيق العميل عن فتح الإشعار
+                (التفاصيل في <span className="mono">docs/تتبع-قراءة-الإشعارات.md</span>)، وحتى ذلك الحين تعرض اللوحة «وصله» من آخر ظهور للتطبيق.
+              </div>
+            ) : null}
+            <div className="table-wrap">
+              <table className="table">
+                <thead><tr><th>العميل</th><th>الحالة</th><th>الوقت</th></tr></thead>
+                <tbody>
+                  {noticeRecipients(viewing, customers, reads)
+                    .sort((a, b) => ['read', 'delivered', 'pending'].indexOf(a.state) - ['read', 'delivered', 'pending'].indexOf(b.state))
+                    .map((r) => (
+                      <tr key={r.deviceId}>
+                        <td><div style={{ fontWeight: 700 }}>{r.customer || '—'}</div><div className="mono muted" style={{ fontSize: 11.5 }}>{r.deviceId}</div></td>
+                        <td><Badge kind={STATE_BADGE[r.state]}>{READ_STATE_LABELS_AR[r.state]}</Badge></td>
+                        <td className="muted">{r.state === 'pending' ? (r.at ? `آخر ظهور ${fmt(r.at)}` : '—') : fmt(r.at)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
       </Modal>
     </>
   )
 }
 
-function SelectCustom(props: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; placeholder: string }) {
+function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSaved: () => Promise<void> }) {
+  const toast = useToast()
+  const n = props.notice.notice
+  const [title, setTitle] = useState(n.title)
+  const [body, setBody] = useState(n.body)
+  const [days, setDays] = useState(String(daysLeft(n.expiresAt) || 30))
+  const [busy, setBusy] = useState(false)
+
+  async function save() {
+    const err = validateNoticeBody(body)
+    if (err) { toast(err, 'error'); return }
+    setBusy(true)
+    try {
+      await editNotice(props.notice, {
+        title, body,
+        expiresAt: new Date(Date.now() + (Number(days) || 30) * 86400000).toISOString(),
+      })
+      toast('✏️ عُدِّل الإشعار — يظهر النص الجديد عند العميل في أول مزامنة', 'ok')
+      await props.onSaved()
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
+  }
+
   return (
-    <div className="field">
-      <select className="select" value={props.value} onChange={(e) => props.onChange(e.target.value)}>
-        <option value="">{props.placeholder}</option>
-        {props.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </div>
+    <Modal open wide title="تعديل الإشعار" sub={`أُرسل ${fmt(n.createdAt)}`} onClose={props.onClose}
+      actions={<><Btn onClick={props.onClose}>إلغاء</Btn><Btn kind="primary" disabled={busy || !body.trim()} onClick={() => void save()}>{busy ? '…' : 'حفظ التعديل'}</Btn></>}>
+      <Field label="العنوان" value={title} onChange={setTitle} />
+      <Textarea label="النص" value={body} onChange={setBody} rows={6} />
+      <Field label="يبقى ظاهراً (أيام من الآن)" value={days} onChange={setDays} dir="ltr" hint={daysLeft(n.expiresAt) ? `المتبقي حالياً: ${daysLeft(n.expiresAt)} يوم` : 'منتهٍ — حدّد مدة لإعادة إظهاره'} />
+    </Modal>
   )
 }
-
-export const Select = SelectCustom

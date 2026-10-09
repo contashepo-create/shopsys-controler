@@ -14,6 +14,9 @@ export type AuditAction =
   | 'flag_disable'
   | 'flag_enable'
   | 'notice_send'
+  | 'notice_edit'
+  | 'notice_delete'
+  | 'license_send'
   | 'about_update'
   | 'version_update'
   | 'settings_global_update'
@@ -43,6 +46,9 @@ export const AUDIT_ACTION_LABELS_AR: Record<AuditAction, string> = {
   flag_disable: 'إطفاء ميزة سحابية',
   flag_enable: 'تفعيل ميزة سحابية',
   notice_send: 'إرسال إشعار',
+  notice_edit: 'تعديل إشعار',
+  notice_delete: 'حذف إشعار',
+  license_send: 'إرسال المفتاح للعميل',
   about_update: 'تحديث «حول»',
   version_update: 'نشر تحديث',
   settings_global_update: 'تحديث الإعدادات العامة',

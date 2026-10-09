@@ -1,196 +1,109 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { bridge } from '../../data/bridge.ts'
-import { issueLicense, revokeLicense, previewPayload } from '../../data/actions.ts'
+import { revokeLicense, readGlobalDefaults, updateGlobalSettings } from '../../data/actions.ts'
 import { useDataStore } from '../../stores/data.store.ts'
 import {
-  DEVICE_ID_RE, generateDeviceId, keyFingerprint,
-  LICENSE_FEATURES, FEATURE_LABELS_AR, MODULE_LABELS_AR, EXTRA_MODULES,
-  PLAN_LABELS_AR, PLAN_LIMITS, canonicalPayload, type LicensePlan, type LicenseFeature,
+  DEVICE_ID_RE, keyFingerprint, LICENSE_FEATURES, FEATURE_LABELS_AR, MODULE_LABELS_AR, EXTRA_MODULES,
+  PLAN_LABELS_AR, type LicensePlan, type LicenseFeature,
 } from '../../core/license.ts'
+import { DERIVED_FEATURES, finalFeatures, toCount, totalBranches } from '../../core/issueForm.ts'
+import { activityDisplay } from '../../core/activities.ts'
 import { Btn, Field, Select, useToast, Badge, EmptyState } from '../components/ui.tsx'
-import { LicenseKeyResult } from '../components/LicenseKeyResult.tsx'
-import { ActivityPicker, isActivityValueValid } from '../components/ActivityPicker.tsx'
-import { activityDisplay, resolveClientActivity } from '../../core/activities.ts'
+import { IssueForm } from '../components/IssueForm.tsx'
 
-type Tab = 'issue' | 'search'
+type Tab = 'issue' | 'search' | 'defaults'
 
 export function LicensesPage() {
   const [tab, setTab] = useState<Tab>('issue')
+  const refresh = useDataStore((s) => s.refresh)
+  useEffect(() => { void refresh() }, [refresh])
   return (
     <>
-      <div className="row" style={{ marginBlockEnd: 14 }}>
+      <div className="tabs">
         <Btn kind={tab === 'issue' ? 'primary' : 'default'} onClick={() => setTab('issue')}>🔑 إصدار مفتاح</Btn>
-        <Btn kind={tab === 'search' ? 'primary' : 'default'} onClick={() => setTab('search')}>🔍 بحث / حرج</Btn>
+        <Btn kind={tab === 'search' ? 'primary' : 'default'} onClick={() => setTab('search')}>🔍 بحث / حرق</Btn>
+        <Btn kind={tab === 'defaults' ? 'primary' : 'default'} onClick={() => setTab('defaults')}>⚙️ افتراضيات الجهاز الجديد</Btn>
       </div>
-      {tab === 'issue' ? <IssueTab /> : <SearchTab />}
+      {tab === 'issue' ? (
+        <div className="card"><IssueForm onIssued={async () => { await refresh() }} /></div>
+      ) : tab === 'search' ? <SearchTab /> : <DefaultsTab />}
     </>
   )
 }
 
-const PLAN_OPTIONS = (Object.keys(PLAN_LABELS_AR) as LicensePlan[]).map((p) => ({ value: p, label: `${PLAN_LABELS_AR[p]} (${p})` }))
+const PLAN_OPTIONS = (Object.keys(PLAN_LABELS_AR) as LicensePlan[]).map((p) => ({ value: p, label: PLAN_LABELS_AR[p] }))
+const SELECTABLE_FEATURES = LICENSE_FEATURES.filter((f) => !DERIVED_FEATURES.includes(f))
 
-function IssueTab() {
+/** settings:global — ما يُعبّأ تلقائياً في نموذج الإصدار لأي جهاز جديد (يقرؤه البوت أيضاً). */
+function DefaultsTab() {
   const toast = useToast()
-  const refresh = useDataStore((s) => s.refresh)
-  const customers = useDataStore((s) => s.customers)
-  const [deviceId, setDeviceId] = useState('')
-  const [customer, setCustomer] = useState('')
+  const [loaded, setLoaded] = useState(false)
   const [plan, setPlan] = useState<LicensePlan>('basic')
   const [days, setDays] = useState('365')
-  const [activityId, setActivityId] = useState('')
-  const [activityCustom, setActivityCustom] = useState(false)
-  /** غيّر المطوّر النشاط يدوياً؟ عندها لا نكتب فوق اختياره */
-  const [activityTouched, setActivityTouched] = useState(false)
-  const [extraUsers, setExtraUsers] = useState('')
-  const [extraBranches, setExtraBranches] = useState('')
+  const [users, setUsers] = useState('')
+  const [branches, setBranches] = useState('')
   const [features, setFeatures] = useState<LicenseFeature[]>([])
   const [modules, setModules] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
-  const [issued, setIssued] = useState<{ key: string; fingerprint: string } | null>(null)
 
-  const deviceValid = DEVICE_ID_RE.test(deviceId.trim().toUpperCase())
-
-  // عميل موجود بنفس معرّف الجهاز؟ → نكتب نشاطه تلقائياً كما اختاره (ويبقى قابلاً للتغيير)
-  const existing = useMemo(
-    () => (deviceValid ? customers.find((c) => c.deviceId === deviceId.trim().toUpperCase()) ?? null : null),
-    [customers, deviceId, deviceValid],
-  )
-  const autoActivity = useMemo(() => (existing ? resolveClientActivity(existing) : { id: '', source: 'none' as const }), [existing])
   useEffect(() => {
-    if (activityTouched) return
-    setActivityId(autoActivity.id)
-    setActivityCustom(false)
-  }, [autoActivity, activityTouched])
-  useEffect(() => {
-    if (existing && !customer.trim() && existing.customer) setCustomer(existing.customer)
-    // اسم العميل يُعبّأ مرة عند التعرف على الجهاز فقط
-  }, [existing])
+    void readGlobalDefaults().then((d) => {
+      setPlan(d.plan); setDays(String(d.days))
+      setUsers(d.extraUsers ? String(d.extraUsers) : ''); setBranches(d.extraBranches ? String(d.extraBranches) : '')
+      setFeatures(d.features.filter((f) => !DERIVED_FEATURES.includes(f))); setModules(d.extraModules)
+      setLoaded(true)
+    }).catch(() => setLoaded(true))
+  }, [])
 
-  function newDeviceId() {
-    const bytes = new Uint8Array(12)
-    crypto.getRandomValues(bytes)
-    setDeviceId(generateDeviceId(bytes))
-  }
+  const toggle = <T,>(list: T[], set: (v: T[]) => void, v: T) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
 
-  const toggle = <T,>(list: T[], set: (v: T[]) => void, v: T) =>
-    set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
-
-  async function submit() {
-    if (!deviceValid) { toast('معرّف الجهاز غير صحيح — الصيغة SHOP-XXXX-XXXX-XXXX', 'error'); return }
-    if (!customer.trim()) { toast('اسم العميل مطلوب', 'error'); return }
-    if (!isActivityValueValid(activityId)) { toast('معرّف النشاط غير صالح', 'error'); return }
+  async function save() {
     setBusy(true)
     try {
-      const res = await issueLicense({
-        deviceId: deviceId.trim().toUpperCase(),
-        customer: customer.trim(),
-        plan,
-        days: Number(days) || 365,
-        activityId: activityId.trim() || undefined,
-        extraUsers: Number(extraUsers) || 0,
-        extraBranches: Number(extraBranches) || 0,
-        features,
-        extraModules: modules,
+      await updateGlobalSettings({
+        plan, days: toCount(days) || 365, extraUsers: toCount(users), extraBranches: toCount(branches),
+        features: finalFeatures(features, plan, toCount(branches)), extraModules: modules,
       })
-      setIssued({ key: res.key, fingerprint: res.fingerprint })
-      if (res.notes?.length) toast(res.notes[0], 'info')
-      else toast('تم إصدار المفتاح ورفعه إلى Cloudflare ✓', 'ok')
-      await refresh()
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error')
-    }
+      toast('تم حفظ الافتراضيات ✓ — ستُعبّأ تلقائياً عند إصدار مفتاح لجهاز جديد', 'ok')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setBusy(false)
   }
 
-  async function copyPayload() {
-    const p = previewPayload({
-      deviceId: deviceId.trim().toUpperCase(), customer, plan, days: Number(days) || 365,
-      activityId: activityId.trim() || undefined, extraUsers: Number(extraUsers) || 0, extraBranches: Number(extraBranches) || 0,
-      features, extraModules: modules,
-    })
-    await navigator.clipboard.writeText(canonicalPayload(p))
-    toast('تم نسخ الحمولة القياسية (للمقارنة مع البوت)', 'ok')
-  }
-
-  if (issued) {
-    return (
-      <div className="card">
-        <div className="card-title">✅ مفتاح التفعيل جاهز</div>
-        <LicenseKeyResult licenseKey={issued.key} fingerprint={issued.fingerprint} onCopy={() => toast('تم النسخ ✓', 'ok')} />
-        <div className="hr" />
-        <div className="row">
-          <Btn onClick={() => { setIssued(null); setCustomer(''); setDeviceId(''); setFeatures([]); setModules([]); setActivityId(''); setActivityCustom(false); setActivityTouched(false) }}>إصدار مفتاح آخر</Btn>
-          <Btn onClick={() => void copyPayload()}>نسخ الحمولة القياسية</Btn>
-        </div>
-      </div>
-    )
-  }
+  if (!loaded) return <div className="card"><EmptyState icon="⏳" text="جارٍ التحميل…" /></div>
 
   return (
-    <div className="grid-2" style={{ alignItems: 'start' }}>
-      <div className="card">
-        <div className="card-title">بيانات الاشتراك</div>
-        <div className="field">
-          <label>معرّف الجهاز *</label>
-          <div className="row">
-            <input className="input input-mono" style={{ flex: 1 }} value={deviceId} dir="ltr" placeholder="SHOP-XXXX-XXXX-XXXX"
-              onChange={(e) => setDeviceId(e.target.value.toUpperCase())} />
-            <Btn size="sm" onClick={newDeviceId} title="توليد معرّف جهاز جديد (لاختبار أو استبدال)">🎲</Btn>
-          </div>
-          <span className="hint">
-            {!deviceValid ? 'يظهر للعميل في شاشة التفعيل داخل التطبيق'
-              : existing ? `✓ عميل مسجَّل: ${existing.customer || '—'}${existing.clientActivityId ? ` · نشاطه: ${activityDisplay(existing.clientActivityId)}` : ''}`
-              : '✓ صيغة صحيحة — جهاز جديد'}
-          </span>
-        </div>
-        <Field label="اسم العميل *" value={customer} onChange={setCustomer} placeholder="بقالة النور — المنصورة" />
-        <div className="grid-2">
-          <Select label="الخطة" value={plan} onChange={(v) => setPlan(v as LicensePlan)} options={PLAN_OPTIONS} />
-          <Field label="المدة (أيام)" value={days} onChange={setDays} dir="ltr" hint={plan === 'lifetime' ? 'تُهمل مع «مدى الحياة»' : `الحدود: ${PLAN_LIMITS[plan].maxUsers} مستخدم / ${PLAN_LIMITS[plan].maxBranches} فرع`} />
-        </div>
-        <ActivityPicker
-          value={activityId}
-          onChange={(v) => { setActivityId(v); setActivityTouched(true) }}
-          clientActivityId={existing?.clientActivityId}
-          source={autoActivity.source}
-          custom={activityCustom}
-          onCustomChange={(v) => { setActivityCustom(v); setActivityTouched(true) }}
-        />
-        <div className="grid-2">
-          <Field label="+ مستخدمون" value={extraUsers} onChange={setExtraUsers} dir="ltr" />
-          <Field label="+ فروع" value={extraBranches} onChange={setExtraBranches} dir="ltr" />
-        </div>
+    <div className="card">
+      <div className="muted" style={{ fontSize: 13, marginBlockEnd: 12 }}>
+        تُعبّأ هذه القيم تلقائياً في نموذج الإصدار لكل <b>جهاز جديد</b> — فلا تختار الميزات كل مرة.
+        أما العميل المسجَّل فيُعبّأ النموذج من اشتراكه الحالي.
       </div>
-
-      <div className="card">
-        <div className="card-title">الميزات والأقسام</div>
-        {LICENSE_FEATURES.map((f) => (
-          <label key={f} className="check-row">
+      <div className="grid-2">
+        <Select label="الباقة" value={plan} onChange={(v) => setPlan(v as LicensePlan)} options={PLAN_OPTIONS} />
+        <Field label="المدة (أيام)" value={days} onChange={setDays} dir="ltr" />
+        <Field label="فروع إضافية بجانب الرئيسي" value={branches} onChange={setBranches} dir="ltr" placeholder="0"
+          hint={`الحد الكلي: ${totalBranches(plan, toCount(branches))}`} />
+        <Field label="مستخدمون إضافيون" value={users} onChange={setUsers} dir="ltr" placeholder="0" />
+      </div>
+      <div className="section-title">الميزات</div>
+      <div className="chip-grid">
+        {SELECTABLE_FEATURES.map((f) => (
+          <label key={f} className={`chip-check${features.includes(f) ? ' on' : ''}`}>
             <input type="checkbox" checked={features.includes(f)} onChange={() => toggle(features, setFeatures, f)} />
-            <span>{FEATURE_LABELS_AR[f]}<span className="check-desc"> — {f}</span></span>
-          </label>
-        ))}
-        <div className="section-title">أقسام إضافية</div>
-        {EXTRA_MODULES.map((m) => (
-          <label key={m} className="check-row">
-            <input type="checkbox" checked={modules.includes(m)} onChange={() => toggle(modules, setModules, m)} />
-            <span>{MODULE_LABELS_AR[m] ?? m}<span className="check-desc"> — {m}</span></span>
+            <span>{FEATURE_LABELS_AR[f]}</span>
           </label>
         ))}
       </div>
-
-      <div className="card" style={{ gridColumn: '1 / -1' }}>
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <div className="muted" style={{ fontSize: 12.5 }}>
-            يُوقَّع المفتاح <b>محلياً</b> على جهازك (Ed25519)، ثم يُرفع السجل إلى Cloudflare KV — نفس تنسيق البوت حرفياً.
-          </div>
-          <div className="row">
-            <Btn onClick={() => void copyPayload()}>نسخ الحمولة القياسية</Btn>
-            <Btn kind="primary" disabled={busy || !deviceValid || !customer.trim()} onClick={() => void submit()}>
-              {busy ? 'جارٍ التوقيع والرفع…' : 'إصدار المفتاح'}
-            </Btn>
-          </div>
-        </div>
+      <div className="section-title">أقسام إضافية</div>
+      <div className="chip-grid">
+        {EXTRA_MODULES.map((m) => (
+          <label key={m} className={`chip-check${modules.includes(m) ? ' on' : ''}`}>
+            <input type="checkbox" checked={modules.includes(m)} onChange={() => toggle(modules, setModules, m)} />
+            <span>{MODULE_LABELS_AR[m] ?? m}</span>
+          </label>
+        ))}
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end', marginBlockStart: 14 }}>
+        <Btn kind="primary" disabled={busy} onClick={() => void save()}>حفظ الافتراضيات</Btn>
       </div>
     </div>
   )
@@ -207,7 +120,17 @@ function SearchTab() {
     if (!q) return
     setBusy(true)
     try {
-      const fp = /^[0-9a-f]{8}$/i.test(q) ? q.toLowerCase() : keyFingerprint(q)
+      let fp: string
+      if (DEVICE_ID_RE.test(q.toUpperCase())) {
+        // بحث بمعرّف الجهاز → بصمة مفتاحه الحالي من dev:
+        const dev = await bridge.cf.get('license', `dev:${q.toUpperCase()}`)
+        let devFp: string | undefined
+        try { devFp = dev.ok && dev.value ? (JSON.parse(dev.value) as { fingerprint?: string }).fingerprint : undefined } catch { devFp = undefined }
+        if (!devFp) { setResult(null); toast('لا يوجد مفتاح لهذا الجهاز', 'error'); setBusy(false); return }
+        fp = devFp
+      } else {
+        fp = /^[0-9a-f]{8}$/i.test(q) ? q.toLowerCase() : keyFingerprint(q)
+      }
       const rec = await bridge.cf.get('license', `lic:${fp}`)
       if (!rec.ok) throw new Error(rec.error ?? 'تعذر القراءة')
       if (!rec.value) { setResult(null); toast(`لا سجل للبصمة ${fp}`, 'error'); setBusy(false); return }
@@ -251,7 +174,7 @@ function SearchTab() {
       </div>
 
       {!result ? (
-        <div className="card"><EmptyState icon="🔍" text="ابحث بمفتاح أو بصمة" hint="نفس أوامر /بحث و/حرق في البوت — على نفس البيانات" /></div>
+        <div className="card"><EmptyState icon="🔍" text="ابحث بمفتاح أو بصمة" hint="بمعرّف الجهاز أو المفتاح الكامل أو البصمة" /></div>
       ) : (
         <div className="card">
           <div className="row" style={{ justifyContent: 'space-between', marginBlockEnd: 10 }}>

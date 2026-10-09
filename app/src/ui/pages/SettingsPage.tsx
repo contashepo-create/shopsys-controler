@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { bridge, isDesktop, type DataInfo } from '../../data/bridge.ts'
 import { useConfigStore } from '../../stores/config.store.ts'
 import { useSessionStore } from '../../stores/session.store.ts'
-import { maskToken, isValidBotToken, isValidChatId } from '../../core/telegramAdmin.ts'
+import { maskToken, isValidBotToken, isValidChatId, buildTestMessage } from '../../core/telegramAdmin.ts'
 import {
-  isValidCfAccountId, isValidCfNamespaceId, validateProfile, DEFAULT_BINDING, LICENSE_NS_DEFAULT,
+  isValidCfAccountId, isValidCfNamespaceId, validateProfile, DEFAULT_BINDING, LICENSE_NS_DEFAULT, APP_NAME,
   suggestNamespaceRoles, servicesBindingSnippet, ROLE_LABELS_AR, ROLE_PURPOSE_AR,
   type CfNamespaceInfo, type NamespaceRole,
 } from '../../core/settings.ts'
@@ -151,6 +151,19 @@ export function SettingsPage() {
       toast(res.ok ? '✅ الاتصال بـ Cloudflare KV يعمل' : `تعذر الاتصال: ${res.error ?? ''}`, res.ok ? 'ok' : 'error')
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setCfTesting(false)
+  }
+
+  /** فحص البوت فعلياً: getMe ثم رسالة اختبار إلى محادثة المطوّر (كانت في صفحة «البوت» المكررة) */
+  async function testBot() {
+    setBusy(true)
+    try {
+      const me = await bridge.tg.getMe()
+      if (!me.ok) { toast(me.error ?? 'التوكن غير صالح', 'error'); setBusy(false); return }
+      const res = await bridge.tg.send(buildTestMessage(APP_NAME))
+      await refreshBot()
+      toast(res.ok ? `✅ يعمل — @${me.username ?? me.firstName ?? ''} أرسل رسالة اختبار لمحادثتك` : `تعذر الإرسال: ${res.error ?? ''}`, res.ok ? 'ok' : 'error')
+    } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+    setBusy(false)
   }
 
   async function saveBot() {
@@ -313,11 +326,12 @@ export function SettingsPage() {
       </div>
 
       <div className="card">
-        <div className="card-title">🤖 إعدادات البوت والتليجرام</div>
+        <div className="card-title">🤖 بوت المطوّر {hasBotToken ? <Badge kind="ok">متصل {botUsername ? `@${botUsername}` : ''}</Badge> : <Badge kind="warn">غير مضبوط</Badge>}</div>
+        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 10 }}>نفس بوت التراخيص — يعمل بالتوازي مع اللوحة على نفس البيانات، ومنه تصل رموز التحقق لكلمة المرور.</div>
         <Field label="توكن البوت" value={token} onChange={setToken} type="password" mono hint={hasBotToken ? 'محفوظ مشفراً — اكتب توكن جديداً للتغيير' : 'من BotFather'} />
         <Field label="معرّف محادثة المطوّر" value={chatId} onChange={setChatId} mono hint="Chat ID الخاص بك — وجهة رموز التحقق والإشعارات" />
         <div className="row" style={{ justifyContent: 'space-between' }}>
-          <Btn onClick={() => void refreshBot()} disabled={!hasBotToken}>فحص الاتصال</Btn>
+          <Btn onClick={() => void testBot()} disabled={!hasBotToken || busy}>فحص وإرسال رسالة اختبار</Btn>
           <Btn kind="primary" disabled={busy} onClick={() => void saveBot()}>حفظ إعدادات البوت</Btn>
         </div>
       </div>
