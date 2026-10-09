@@ -75,12 +75,16 @@ export function modulesIncludedInActivity(activityId: string | null | undefined)
 
 const LABEL_BY_ID = new Map(ACTIVITY_CATALOG.map((a) => [a.id, a.label]))
 
-/** معرّف نشاط صالح: حروف لاتينية صغيرة وأرقام و _ و - (نفس شكل معرّفات التطبيق). */
-export const ACTIVITY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/
+/**
+ * معرّف نشاط صالح: 1–64 حرفاً بلا مسافات أو علامات تنصيص.
+ * ⚠️ لا نغيّر حالة الأحرف ولا نحوّل المعرّف أبداً — يُوقَّع كما هو داخل المفتاح، وأي تغيير
+ * (مثل carParts → carparts) يجعل التطبيق يرى نشاطاً مختلفاً.
+ */
+export const ACTIVITY_ID_RE = /^[^\s"'\\]{1,64}$/u
 
 export function normalizeActivityId(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
-  const v = raw.trim().toLowerCase()
+  const v = raw.trim()
   return ACTIVITY_ID_RE.test(v) ? v : null
 }
 
@@ -141,13 +145,16 @@ export function buildActivityOptions(
 ): ActivityOption[] {
   const out: ActivityOption[] = ACTIVITY_CATALOG.map((a) => ({ value: a.id, label: `${a.label} — ${a.id}` }))
   const seen = new Set(out.map((o) => o.value))
-  const add = (raw: string | null | undefined) => {
+  const add = (raw: string | null | undefined, label: (id: string) => string) => {
     const id = normalizeActivityId(raw)
     if (!id || seen.has(id)) return
     seen.add(id)
-    out.push({ value: id, label: `${id} (من بيانات العملاء)` })
+    out.push({ value: id, label: label(id) })
   }
-  for (const c of customers) { add(c.clientActivityId); add(c.activityId) }
-  for (const e of extra) add(e)
+  for (const c of customers) {
+    add(c.clientActivityId, (id) => `${id} (من بيانات العملاء)`)
+    add(c.activityId, (id) => `${id} (من بيانات العملاء)`)
+  }
+  for (const e of extra) add(e, (id) => id)
   return out
 }

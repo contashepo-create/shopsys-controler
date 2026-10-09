@@ -82,6 +82,8 @@ export function IssueForm(props: {
 
   // تعبئة تلقائية — مرة لكل هوية (عميل موجود / جهاز جديد)، ولا نكتب فوق تعديلاتك بعدها
   useEffect(() => {
+    // ننتظر الافتراضيات أولاً حتى لا تُبنى التعبئة على قيم مؤقتة (تسقط لقيم آمنة عند الفشل)
+    if (!defaults) return
     const today = new Date().toISOString().slice(0, 10)
     if (existing) {
       const tag = `c:${existing.deviceId}:${existing.fingerprint ?? ''}`
@@ -91,9 +93,9 @@ export function IssueForm(props: {
       const act = resolveClientActivity(existing)
       setActivityId(act.id); setActivitySource(act.source); setActivityCustom(false)
       const validPlan = (['trial', 'basic', 'pro', 'lifetime'] as const).includes(existing.plan as LicensePlan)
-      setPlan(validPlan ? existing.plan as LicensePlan : (defaults?.plan ?? 'basic'))
-      const active = existing.status === 'active' || existing.status === 'expiring'
-      setDays(String(active ? defaultRenewDays(existing.expiresAt, today, defaults?.days ?? 365) : (defaults?.days ?? 365)))
+      setPlan(validPlan ? existing.plan as LicensePlan : defaults.plan)
+      // اشتراك ما زال له وقت (حتى لو معطّل) → نفس تاريخ انتهائه؛ منتهٍ أو بلا اشتراك → مدة الافتراضيات
+      setDays(String(validPlan ? defaultRenewDays(existing.expiresAt, today, defaults.days) : defaults.days))
       setExtraUsers(existing.extraUsers ? String(existing.extraUsers) : '')
       setExtraBranches(existing.extraBranches ? String(existing.extraBranches) : '')
       setFeatures(existing.features.filter((f) => !DERIVED_FEATURES.includes(f)))
@@ -101,7 +103,6 @@ export function IssueForm(props: {
       return
     }
     if (lookupState === 'new' || (lookupState === 'idle' && !fixed)) {
-      if (!defaults) return
       const tag = 'new'
       if (prefilledFor === tag) return
       const fromCustomer = prefilledFor?.startsWith('c:')
@@ -127,6 +128,10 @@ export function IssueForm(props: {
   const removedModules = ownedModules.filter((m) => !modules.includes(m))
   const addedModules = signedModules.filter((m) => !ownedModules.includes(m))
   const expiry = plan === 'lifetime' ? null : expiresAfterDays(toCount(days) || 365)
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const keepDays = existing?.expiresAt ? defaultRenewDays(existing.expiresAt, todayIso, 0) : 0
+  /** «تعدد الفروع» كان عنده وسيُزال لأن الحد الكلي صار فرعاً واحداً */
+  const losesMultiBranch = existing?.features.includes('multi_branch') === true && !signedFeatures.includes('multi_branch')
 
   const toggle = <T,>(list: T[], set: (v: T[]) => void, v: T) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
 
@@ -241,8 +246,19 @@ export function IssueForm(props: {
         {plan === 'lifetime' ? (
           <Field label="المدة" value="مدى الحياة" onChange={() => {}} hint="لا تاريخ انتهاء" />
         ) : (
-          <Field label="المدة (أيام)" value={days} onChange={setDays} dir="ltr"
-            hint={`ينتهي في ${expiry}${existing?.expiresAt && expiry === existing.expiresAt ? ' — نفس تاريخه الحالي' : ''}`} />
+          <div className="field">
+            <label>المدة (أيام)</label>
+            <input className="input" dir="ltr" value={days} onChange={(e) => setDays(e.target.value)} />
+            <div className="row" style={{ gap: 6 }}>
+              {keepDays > 0 ? <Btn size="sm" kind={toCount(days) === keepDays ? 'primary' : 'default'} onClick={() => setDays(String(keepDays))}>إبقاء تاريخه ({existing?.expiresAt})</Btn> : null}
+              {[30, 90, 365].map((d) => (
+                <Btn key={d} size="sm" kind={toCount(days) === d && d !== keepDays ? 'primary' : 'default'} onClick={() => setDays(String(d))}>
+                  {d === 30 ? 'شهر' : d === 90 ? '3 أشهر' : 'سنة'}
+                </Btn>
+              ))}
+            </div>
+            <span className="hint">ينتهي في {expiry}{existing?.expiresAt && expiry === existing.expiresAt ? ' — نفس تاريخه الحالي' : ''}</span>
+          </div>
         )}
         <Field label="فروع إضافية بجانب الفرع الرئيسي" value={extraBranches} onChange={setExtraBranches} dir="ltr" placeholder="0"
           hint={`الحد الكلي: ${branchesTotal} ${branchesTotal === 1 ? 'فرع (الرئيسي فقط)' : 'فروع'} — الباقة تعطي ${PLAN_LIMITS[plan].maxBranches}${branchesTotal > 1 ? ' · تعدد الفروع يُفعَّل تلقائياً' : ''}`} />
@@ -309,6 +325,11 @@ export function IssueForm(props: {
         {addedModules.length ? <> · <span style={{ color: 'var(--ok)' }}>+ {addedModules.map((m) => MODULE_LABELS_AR[m] ?? m).join('، ')}</span></> : null}
         {removedModules.length ? <> · <span style={{ color: 'var(--danger)' }}>− {removedModules.map((m) => MODULE_LABELS_AR[m] ?? m).join('، ')}</span></> : null}
       </div>
+      {losesMultiBranch ? (
+        <div className="notice notice-warn" style={{ display: 'block', marginBlockEnd: 8 }}>
+          ⚠️ عنده «تعدد الفروع» حالياً وسيُزال لأن الحد الكلي فرع واحد — اكتب عدد الفروع الإضافية لو أردت إبقاءه.
+        </div>
+      ) : null}
       {existing?.fingerprint && existing.status !== 'revoked' ? (
         <label className="check-row">
           <input type="checkbox" checked={burnPrevious} onChange={() => setBurnPrevious(!burnPrevious)} />

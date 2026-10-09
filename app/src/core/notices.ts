@@ -7,6 +7,7 @@
  */
 
 import type { CustomerView } from './customers.ts'
+import { activityLabel } from './activities.ts'
 
 export interface CloudNotice {
   id: string
@@ -97,7 +98,7 @@ export function describeTargeting(targeting: NoticeTargeting, customers: readonl
       return `مجموعة (${targeting.deviceIds.length} عميل)`
     case 'activity': {
       const count = customers.filter((c) => customerActivity(c) === targeting.activityId).length
-      return `نشاط «${targeting.activityId}» (${count} عميل)`
+      return `نشاط «${activityLabel(targeting.activityId)}» (${count} عميل)`
     }
   }
 }

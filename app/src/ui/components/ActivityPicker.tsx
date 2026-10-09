@@ -62,14 +62,14 @@ export function ActivityPicker(props: {
           className="input input-mono"
           dir="ltr"
           autoFocus
-          placeholder="مثال: bookstore"
+          placeholder="اكتبه كما في تطبيق العميل حرفياً — مثال: bookstore"
           value={props.value}
-          onChange={(e) => props.onChange(e.target.value.trim().toLowerCase())}
+          onChange={(e) => props.onChange(e.target.value.trim())}
         />
       ) : null}
 
       {!customValid ? (
-        <span className="hint" style={{ color: 'var(--danger)' }}>المعرّف بحروف لاتينية صغيرة وأرقام و _ فقط — كما في تطبيق العميل</span>
+        <span className="hint" style={{ color: 'var(--danger)' }}>المعرّف بلا مسافات أو علامات تنصيص — اكتبه كما في تطبيق العميل حرفياً</span>
       ) : client ? (
         changedFromClient ? (
           <span className="hint" style={{ color: 'var(--warn)' }}>

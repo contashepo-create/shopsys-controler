@@ -21,7 +21,8 @@ export function DashboardPage() {
   }, [customers])
 
   const recent = useMemo(
-    () => [...customers].sort((a, b) => (b.lastSeenAt ?? b.lastActivityAt ?? '').localeCompare(a.lastSeenAt ?? a.lastActivityAt ?? '')).slice(0, 8),
+    // lastSeenAt بصيغة ISO وlastActivityAt بصيغة «YYYY-MM-DD HH:MM» — نوحّدهما قبل المقارنة
+    () => [...customers].sort((a, b) => seenKey(b).localeCompare(seenKey(a))).slice(0, 8),
     [customers],
   )
 
@@ -69,7 +70,7 @@ export function DashboardPage() {
                       </td>
                       <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? c.plan ?? '—'}</td>
                       <td><StatusBadge status={c.status} /></td>
-                      <td className="muted">{(c.lastSeenAt ?? c.lastActivityAt ?? '—').slice(0, 16).replace('T', ' ')}</td>
+                      <td className="muted">{seenKey(c) || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -108,6 +109,10 @@ export function DashboardPage() {
 
     </>
   )
+}
+
+function seenKey(c: { lastSeenAt: string | null; lastActivityAt: string | null }): string {
+  return (c.lastSeenAt ?? c.lastActivityAt ?? '').slice(0, 16).replace('T', ' ')
 }
 
 export function StatusBadge({ status }: { status: keyof typeof STATUS_LABELS_AR }) {

@@ -32,6 +32,8 @@ export function CustomersPage() {
   const [sortKey, setSortKey] = useState<CustomerSortKey>('customer')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [issueOpen, setIssueOpen] = useState(false)
+  /** فُتح الإصدار من زر الصف مباشرة؟ عندها الإغلاق يعيدك للقائمة لا لبطاقة العميل */
+  const [issueFromRow, setIssueFromRow] = useState(false)
   const [confirmDeactivate, setConfirmDeactivate] = useState<CustomerView | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -64,7 +66,14 @@ export function CustomersPage() {
 
   function openIssue(c: CustomerView) {
     setSelectedId(c.deviceId)
+    setIssueFromRow(true)
     setIssueOpen(true)
+  }
+
+  function closeIssue() {
+    setIssueOpen(false)
+    if (issueFromRow) setSelectedId(null)
+    setIssueFromRow(false)
   }
 
   return (
@@ -132,7 +141,7 @@ export function CustomersPage() {
           customer={selected}
           busy={busy}
           onClose={() => setSelectedId(null)}
-          onIssue={() => setIssueOpen(true)}
+          onIssue={() => { setIssueFromRow(false); setIssueOpen(true) }}
           onDeactivate={() => setConfirmDeactivate(selected)}
         />
       ) : null}
@@ -142,7 +151,7 @@ export function CustomersPage() {
           key={`${selected.deviceId}:${issueOpen}`}
           open={issueOpen}
           customer={selected}
-          onClose={() => setIssueOpen(false)}
+          onClose={closeIssue}
           onDone={async () => { await refresh() }}
         />
       ) : null}

@@ -343,11 +343,19 @@ export async function listSentNotices(): Promise<SentNoticesResult> {
     return all
   }
   const [noticeKeys, readKeys] = await Promise.all([listKeys(NOTICE_KEY_PREFIX), listKeys(NOTICE_READ_PREFIX).catch(() => [] as string[])])
-  const fetchAll = (keys: string[]) => Promise.all(keys.map(async (k) => {
-    const r = await bridge.cf.get('license', k)
-    return [k, r.ok ? r.value : null] as const
-  }))
-  const [lists, reads] = await Promise.all([fetchAll(noticeKeys), fetchAll(readKeys)])
+  // قراءة على دفعات (8 طلبات متزامنة) — حتى لا نصطدم بحد طلبات Cloudflare API مع كثرة العملاء
+  const fetchAll = async (keys: string[]) => {
+    const out: (readonly [string, string | null])[] = []
+    for (let i = 0; i < keys.length; i += 8) {
+      out.push(...await Promise.all(keys.slice(i, i + 8).map(async (k) => {
+        const r = await bridge.cf.get('license', k)
+        return [k, r.ok ? r.value : null] as const
+      })))
+    }
+    return out
+  }
+  const lists = await fetchAll(noticeKeys)
+  const reads = await fetchAll(readKeys)
   const readsByDevice = new Map<string, Record<string, string>>()
   for (const [k, raw] of reads) readsByDevice.set(k.slice(NOTICE_READ_PREFIX.length), parseNoticeReads(raw))
   return { notices: collectSentNotices(lists), readsByDevice }

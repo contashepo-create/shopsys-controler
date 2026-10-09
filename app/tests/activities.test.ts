@@ -28,11 +28,18 @@ describe('كتالوج الأنشطة', () => {
     expect(activityDisplay(null)).toBe('—')
   })
 
-  it('normalizeActivityId يرفض القيم غير الصالحة', () => {
-    expect(normalizeActivityId(' Grocery ')).toBe('grocery')
-    expect(normalizeActivityId('بقالة')).toBeNull()
+  it('normalizeActivityId لا يغيّر المعرّف (حالة الأحرف تُوقَّع كما هي) ويرفض غير الصالح', () => {
+    expect(normalizeActivityId(' carParts ')).toBe('carParts')
+    expect(normalizeActivityId('equipment_rental')).toBe('equipment_rental')
+    expect(normalizeActivityId('two words')).toBeNull()
+    expect(normalizeActivityId('a"b')).toBeNull()
     expect(normalizeActivityId('')).toBeNull()
+    expect(normalizeActivityId('x'.repeat(65))).toBeNull()
     expect(normalizeActivityId(42)).toBeNull()
+  })
+
+  it('نشاط المفتاح الموقّع بحروف كبيرة يُعاد توقيعه كما هو عند التجديد', () => {
+    expect(resolveClientActivity({ activityId: 'carParts' })).toEqual({ id: 'carParts', source: 'license' })
   })
 })
 

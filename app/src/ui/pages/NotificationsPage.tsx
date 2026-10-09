@@ -98,7 +98,8 @@ export function NotificationsPage() {
     try {
       await deleteNotice(n)
       toast('🗑️ حُذف الإشعار — يختفي من تطبيق العميل عند أول مزامنة', 'ok')
-      await loadSent()
+      // تحديث محلي بدل إعادة قراءة كل القوائم من Cloudflare
+      setSent((list) => list.filter((x) => x.notice.id !== n.notice.id))
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setBusy(false)
   }
@@ -223,7 +224,17 @@ export function NotificationsPage() {
         </div>
       </div>
 
-      {editing ? <EditNoticeDialog notice={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await loadSent() }} /> : null}
+      {editing ? (
+        <EditNoticeDialog
+          notice={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(patch) => {
+            const id = editing.notice.id
+            setSent((list) => list.map((x) => (x.notice.id === id ? { ...x, notice: { ...x.notice, ...patch, editedAt: new Date().toISOString() } } : x)))
+            setEditing(null)
+          }}
+        />
+      ) : null}
 
       <ConfirmDialog
         open={deleting != null}
@@ -267,7 +278,7 @@ export function NotificationsPage() {
   )
 }
 
-function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSaved: () => Promise<void> }) {
+function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSaved: (patch: { title: string; body: string; expiresAt: string }) => void }) {
   const toast = useToast()
   const n = props.notice.notice
   const [title, setTitle] = useState(n.title)
@@ -280,12 +291,13 @@ function EditNoticeDialog(props: { notice: SentNotice; onClose: () => void; onSa
     if (err) { toast(err, 'error'); return }
     setBusy(true)
     try {
-      await editNotice(props.notice, {
-        title, body,
+      const patch = {
+        title: title.trim() || 'رسالة من المطوّر', body,
         expiresAt: new Date(Date.now() + (Number(days) || 30) * 86400000).toISOString(),
-      })
+      }
+      await editNotice(props.notice, patch)
       toast('✏️ عُدِّل الإشعار — يظهر النص الجديد عند العميل في أول مزامنة', 'ok')
-      await props.onSaved()
+      props.onSaved(patch)
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setBusy(false)
   }

@@ -138,3 +138,12 @@ describe('تتبع القراءة', () => {
     expect(resolveTargetDevices({ type: 'activity', activityId: 'pharmacy' }, cs as never)).toEqual({ mode: 'devices', deviceIds: ['A', 'B'] })
   })
 })
+
+import { describeTargeting } from '../src/core/notices.ts'
+
+describe('describeTargeting — اسم النشاط بدل المعرّف', () => {
+  it('يعرض الاسم العربي للنشاط المعروف والمعرّف كما هو لغير المعروف', () => {
+    expect(describeTargeting({ type: 'activity', activityId: 'grocery' }, [])).toContain('بقالة')
+    expect(describeTargeting({ type: 'activity', activityId: 'customX' }, [])).toContain('customX')
+  })
+})
