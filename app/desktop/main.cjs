@@ -13,6 +13,7 @@ const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
+const { createAuth } = require('./auth.cjs')
 
 /* ───────────────────────── local store ───────────────────────── */
 
@@ -31,9 +32,53 @@ function readJson(name, fallback) {
   }
 }
 
+/** كائن JSON عادي أو {} — يمنع انهيار «null.cfAccountId» عند ملف يحوي null أو مصفوفة. */
+function readObject(name) {
+  const v = readJson(name, {})
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+}
+
+/**
+ * قراءة قبل تعديل (قراءة ← تعديل ← كتابة): الملف غير الموجود = fallback، أما الملف التالف
+ * فيُنسخ جانباً (<name>.corrupt-<وقت>) قبل البدء من fallback — حتى لا تمحو الكتابة التالية
+ * أسراراً أو سجلاً كان يمكن استعادته يدوياً.
+ */
+function readJsonForUpdate(name, fallback, isValid) {
+  let text
+  try {
+    text = fs.readFileSync(jsonPath(name), 'utf8')
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return fallback
+    throw e
+  }
+  try {
+    const v = JSON.parse(text)
+    if (!isValid || isValid(v)) return v
+  } catch { /* تالف — يُنسخ جانباً بالأسفل */ }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  try { fs.copyFileSync(jsonPath(name), `${jsonPath(name)}.corrupt-${stamp}`) } catch { /* أفضل جهد */ }
+  console.warn(`[controler] ${name} تالف — حُفظت نسخة منه جانباً`)
+  return fallback
+}
+
+const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * كتابة ذرّية: ملف مؤقت ثم إعادة تسمية فوق الأصل — انقطاع الكهرباء أو إغلاق التطبيق
+ * أثناء الكتابة لا يترك auth.json أو secrets.enc.json نصف مكتوب (= فقدان المفاتيح وكلمة المرور).
+ */
 function writeJson(name, value) {
   fs.mkdirSync(userDir(), { recursive: true })
-  fs.writeFileSync(jsonPath(name), JSON.stringify(value), 'utf8')
+  const target = jsonPath(name)
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(value), 'utf8')
+  try {
+    fs.renameSync(tmp, target)
+  } catch {
+    // ويندوز: قد يقفل مضاد الفيروسات الملف لحظياً — نكتب مباشرة كحل أخير (ويُرمى خطؤها إن فشلت)
+    try { fs.writeFileSync(target, JSON.stringify(value), 'utf8') } finally { try { fs.unlinkSync(tmp) } catch { /* ignore */ } }
+  }
+  if (name === SECRETS_FILE || name === 'config.json') cfConfigCache = null
 }
 
 /* ───────────────────────── secrets (encrypted at rest) ───────────────────────── */
@@ -65,11 +110,12 @@ function decryptSecret(stored) {
 }
 
 function readSecretsRaw() {
-  return readJson(SECRETS_FILE, {})
+  const v = readJson(SECRETS_FILE, {})
+  return isPlainObject(v) ? v : {}
 }
 
 function setSecret(name, value) {
-  const all = readSecretsRaw()
+  const all = readJsonForUpdate(SECRETS_FILE, {}, isPlainObject)
   if (value === undefined || value === null || value === '') delete all[name]
   else all[name] = encryptSecret(String(value))
   writeJson(SECRETS_FILE, all)
@@ -84,13 +130,22 @@ function getSecret(name) {
 
 const CF_BASE = 'https://api.cloudflare.com/client/v4'
 
+/**
+ * إعداد Cloudflare مخزّن مؤقتاً: كان كل طلب KV يقرأ ويفك تشفير الأسرار ويقرأ config.json
+ * ثلاث مرات (cfConfig + nsIdFor + cfHeaders) — مئات الطلبات المتوازية عند كل تحديث.
+ * يُبطَل تلقائياً عند أي كتابة لملف الأسرار أو الإعداد (writeJson).
+ */
+let cfConfigCache = null
 function cfConfig() {
-  return {
+  if (cfConfigCache) return cfConfigCache
+  const conf = readObject('config.json')
+  cfConfigCache = {
     token: getSecret('cfApiToken'),
-    accountId: (getSecret('cfAccountId') || readJson('config.json', {}).cfAccountId || '').trim(),
-    nsLicense: (readJson('config.json', {}).nsLicense || '').trim(),
-    nsServices: (readJson('config.json', {}).nsServices || '').trim(),
+    accountId: String(getSecret('cfAccountId') || conf.cfAccountId || '').trim(),
+    nsLicense: String(conf.nsLicense || '').trim(),
+    nsServices: String(conf.nsServices || '').trim(),
   }
+  return cfConfigCache
 }
 
 function nsIdFor(ns) {
@@ -103,6 +158,27 @@ function cfHeaders() {
   return {
     authorization: `Bearer ${cfg.token}`,
     'content-type': 'application/json; charset=utf-8',
+  }
+}
+
+/** نتيجة فشل موحّدة بكود يفهمه الواجهة (auth = توكن مرفوض، cf_error = غير ذلك). */
+function cfFail(status, body) {
+  return { ok: false, code: status === 401 || status === 403 ? 'auth' : 'cf_error', error: cfError(status, body) }
+}
+
+/**
+ * 404 على قراءة قيمة: «المفتاح غير موجود» (10009) = null طبيعي، أما 404 لأن الحساب أو
+ * المساحة غير موجودة (7003 / رسالة namespace) فهو خطأ إعداد — لا يجوز اعتباره «مفتاح فارغ»
+ * وإلا كتبت مسارات القراءة-التعديل-الكتابة فوق بيانات حقيقية في مساحة صحيحة لاحقاً.
+ */
+function isMissingKey404(body) {
+  try {
+    const err = JSON.parse(body)?.errors?.[0]
+    if (!err) return true
+    if (err.code === 7003) return false
+    return !/namespace|account/i.test(String(err.message ?? ''))
+  } catch {
+    return true
   }
 }
 
@@ -176,17 +252,17 @@ async function handleCfRequest(payload) {
       if (payload.cursor) params.set('cursor', String(payload.cursor))
       const res = await cfFetch(`${base}/keys?${params}`, { headers })
       const text = await res.text()
-      if (!res.ok) return { ok: false, error: cfError(res.status, text) }
+      if (!res.ok) return cfFail(res.status, text)
       const env = JSON.parse(text)
-      if (!env.success) return { ok: false, error: env.errors?.[0]?.message ?? 'فشل سرد المفاتيح' }
+      if (!env.success) return { ok: false, code: 'cf_error', error: env.errors?.[0]?.message ?? 'فشل سرد المفاتيح' }
       return { ok: true, keys: (env.result ?? []).map((k) => k.name), cursor: env.result_info?.cursor || null }
     }
 
     if (op === 'get') {
       const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, { headers })
-      if (res.status === 404) return { ok: true, value: null }
       const text = await res.text()
-      if (!res.ok) return { ok: false, error: cfError(res.status, text) }
+      if (res.status === 404 && isMissingKey404(text)) return { ok: true, value: null }
+      if (!res.ok) return cfFail(res.status, text)
       return { ok: true, value: text }
     }
 
@@ -197,25 +273,25 @@ async function handleCfRequest(payload) {
         body: String(payload.value ?? ''),
       })
       const text = await res.text()
-      if (!res.ok) return { ok: false, error: cfError(res.status, text) }
+      if (!res.ok) return cfFail(res.status, text)
       try {
         const env = JSON.parse(text)
-        if (!env.success) return { ok: false, error: env.errors?.[0]?.message ?? 'فشل الحفظ' }
+        if (!env.success) return { ok: false, code: 'cf_error', error: env.errors?.[0]?.message ?? 'فشل الحفظ' }
       } catch { /* older API returns empty body */ }
       return { ok: true }
     }
 
     if (op === 'delete') {
       const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, { method: 'DELETE', headers })
-      if (res.status === 404) return { ok: true }
       const text = await res.text()
-      if (!res.ok) return { ok: false, error: cfError(res.status, text) }
+      if (res.status === 404 && isMissingKey404(text)) return { ok: true }
+      if (!res.ok) return cfFail(res.status, text)
       return { ok: true }
     }
 
-    return { ok: false, error: 'عملية غير معروفة' }
+    return { ok: false, code: 'cf_error', error: 'عملية غير معروفة' }
   } catch (e) {
-    return { ok: false, error: `تعذر الاتصال بـ Cloudflare: ${e.message}` }
+    return { ok: false, code: 'cf_error', error: `تعذر الاتصال بـ Cloudflare: ${e.message}` }
   }
 }
 
@@ -411,13 +487,37 @@ function handleLicenseCheck() {
 
 /* ───────────────────────── settings plumbing ───────────────────────── */
 
+/**
+ * يفحص المفتاح الخاص قبل حفظه: Ed25519 بصيغة pkcs8 ويطابق المفتاح العام المضمّن في التطبيق.
+ * مفتاح لا يطابق يوقّع تراخيص ترفضها كل نسخ العملاء — فالأفضل رفضه هنا بدل اكتشاف ذلك
+ * بعد إرسال مفاتيح معطوبة للعملاء. يعيد null عند الصحة أو رسالة الخطأ.
+ */
+function validatePrivateKey(b64u) {
+  let pub
+  try {
+    const priv = crypto.createPrivateKey({ key: b64uToBuffer(b64u), format: 'der', type: 'pkcs8' })
+    if (priv.asymmetricKeyType !== 'ed25519') return 'المفتاح ليس Ed25519'
+    const raw = crypto.createPublicKey(priv).export({ format: 'der', type: 'spki' })
+    pub = bufferToB64u(raw.subarray(raw.length - 32))
+  } catch {
+    return 'المفتاح الخاص غير صالح — يجب أن يكون Ed25519 بصيغة pkcs8 مرمّزة base64url'
+  }
+  if (pub !== PUBLIC_KEY_B64U) return 'المفتاح الخاص لا يطابق المفتاح العام المضمّن في التطبيق — التراخيص الموقّعة به سترفضها نسخ العملاء'
+  return null
+}
+
 function handleSecretsSet(patch) {
-  const p = patch || {}
+  const p = patch && typeof patch === 'object' ? patch : {}
+  if ('privateKeyB64u' in p && p.privateKeyB64u) {
+    p.privateKeyB64u = String(p.privateKeyB64u).trim()
+    const err = validatePrivateKey(p.privateKeyB64u)
+    if (err) return { ok: false, code: 'invalid_key', error: err }
+  }
   if ('cfApiToken' in p) setSecret('cfApiToken', p.cfApiToken)
   if ('botToken' in p) setSecret('botToken', p.botToken)
   if ('adminChatId' in p) setSecret('adminChatId', p.adminChatId)
   if ('privateKeyB64u' in p) setSecret('privateKeyB64u', p.privateKeyB64u)
-  const cfg = readJson('config.json', {})
+  const cfg = readJsonForUpdate('config.json', {}, isPlainObject)
   if ('cfAccountId' in p) cfg.cfAccountId = String(p.cfAccountId || '')
   if ('cfNsLicense' in p) cfg.nsLicense = String(p.cfNsLicense || '')
   if ('cfNsServices' in p) cfg.nsServices = String(p.cfNsServices || '')
@@ -426,7 +526,7 @@ function handleSecretsSet(patch) {
 }
 
 function handleSecretsStatus() {
-  const cfg = readJson('config.json', {})
+  const cfg = readObject('config.json')
   const keyInfo = handleLicenseCheck()
   return {
     hasCfToken: Boolean(getSecret('cfApiToken')),
@@ -442,19 +542,41 @@ function handleSecretsStatus() {
 
 /* ───────────────────────── password & profile ───────────────────────── */
 
-function handleAuthSetPassword(hash) {
-  writeJson('auth.json', hash)
-  return { ok: true }
-}
+/**
+ * المصادقة كلها في desktop/auth.cjs (مختبرة مباشرة): تحقق PBKDF2 بالملح المخزّن،
+ * حالة القفل، ورمز الاستعادة. auth.json التالف لا يُعامل كـ«لا كلمة مرور» (يرمي)،
+ * والاستعادة عبر رمز تليجرام تبقى متاحة لإصلاحه.
+ */
+const auth = createAuth({
+  readAuth: () => {
+    try {
+      return JSON.parse(fs.readFileSync(jsonPath('auth.json'), 'utf8'))
+    } catch (e) {
+      if (e && e.code === 'ENOENT') return null
+      throw new Error('ملف كلمة المرور تالف — استخدم «نسيت كلمة المرور؟» لتعيينها من جديد')
+    }
+  },
+  writeAuth: (v) => writeJson('auth.json', v),
+  sendTelegram: (text) => handleTgSend(text),
+})
 
-function handleAuthVerify(hash) {
-  const stored = readJson('auth.json', null)
-  if (!stored) return { ok: false }
-  const eq = (a, b) => {
-    if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false
-    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
-  }
-  return { ok: eq(stored.hash, hash?.hash) && eq(stored.salt, hash?.salt) }
+/**
+ * قنوات لا تعمل واللوحة مقفلة (إلا في أول تشغيل قبل إنشاء كلمة المرور):
+ * التوقيع، الأسرار، Cloudflare، البوت، سجل التدقيق، ونسخة العملاء المحلية.
+ */
+const LOCKED_CHANNELS = new Set([
+  'license:sign', 'secrets:set', 'cf:request', 'cf:test', 'cf:namespaces', 'cf:namespaceCreate',
+  'tg:send', 'tg:getMe', 'db:auditList', 'db:cacheGet', 'db:cachePut', 'app:openDataFolder', 'app:snapshotData',
+])
+const LOCKED_RESULT = { ok: false, code: 'locked', error: 'اللوحة مقفلة — أدخل كلمة المرور أولاً' }
+
+/** تفاصيل التدقيق نص JSON صالح دائماً (القصّ الأعمى عند 2000 حرف كان ينتج JSON مكسوراً). */
+function auditDetails(details) {
+  if (details == null || details === '') return null
+  let text
+  try { text = typeof details === 'string' ? details : JSON.stringify(details) } catch { return null }
+  if (text.length <= 2000) return text
+  return JSON.stringify({ truncated: true, preview: text.slice(0, 1800) })
 }
 
 /* ───────────────── بيانات المالك: لقطات تلقائية (لا تُمسّ عند التحديث) ───────────────── */
@@ -626,7 +748,7 @@ const HANDLERS = {
   },
   'setup:isComplete': () => ({
     hasProfile: Boolean(readJson('profile.json', null)?.name),
-    hasPassword: Boolean(readJson('auth.json', null)?.hash),
+    hasPassword: auth.hasPassword(),
   }),
   'profile:get': () => readJson('profile.json', null),
   'profile:save': (p) => {
@@ -637,8 +759,11 @@ const HANDLERS = {
     })
     return { ok: true }
   },
-  'auth:setPassword': (h) => handleAuthSetPassword(h),
-  'auth:verifyPassword': (h) => handleAuthVerify(h),
+  'auth:setPassword': (h) => auth.setPassword(h),
+  'auth:verifyPassword': (pw) => auth.verify(pw),
+  'auth:lock': () => auth.lock(),
+  'auth:requestOtp': (purpose) => auth.requestOtp(purpose),
+  'auth:resetWithOtp': (code, h) => auth.resetWithOtp(code, h),
   'secrets:status': () => handleSecretsStatus(),
   'secrets:set': (p) => handleSecretsSet(p),
   'cf:request': (p) => handleCfRequest(p),
@@ -653,10 +778,10 @@ const HANDLERS = {
     const row = {
       action: String(e?.action ?? '').slice(0, 60),
       target: e?.target != null ? String(e.target).slice(0, 120) : null,
-      details: e?.details ? JSON.stringify(e.details).slice(0, 2000) : null,
-      at: String(e?.at ?? new Date().toISOString()),
+      details: auditDetails(e?.details),
+      at: String(e?.at ?? new Date().toISOString()).slice(0, 40),
     }
-    const list = readJson('audit.json', [])
+    const list = readJsonForUpdate('audit.json', [], Array.isArray)
     list.push(row)
     // سقف 5000 سطر — يكفي سنوات استخدام ويُبقي الملف صغيراً
     const trimmed = list.length > 5000 ? list.slice(list.length - 5000) : list
@@ -665,15 +790,16 @@ const HANDLERS = {
   },
   'db:auditList': (limit) => {
     const n = Math.min(Math.max(Number(limit) || 200, 1), 1000)
-    const list = readJson('audit.json', [])
+    const raw = readJson('audit.json', [])
+    const list = Array.isArray(raw) ? raw : []
     return list.slice(-n).reverse().map((row, i) => ({ id: list.length - i, ...row }))
   },
   'db:cacheGet': (key) => {
-    const cache = readJson('cache.json', {})
+    const cache = readObject('cache.json')
     return cache[String(key)] ?? null
   },
   'db:cachePut': (key, value) => {
-    const cache = readJson('cache.json', {})
+    const cache = readJsonForUpdate('cache.json', {}, isPlainObject)
     cache[String(key)] = String(value)
     writeJson('cache.json', cache)
     return { ok: true }
@@ -688,6 +814,7 @@ const HANDLERS = {
 function registerIpc() {
   for (const [channel, fn] of Object.entries(HANDLERS)) {
     ipcMain.handle(channel, async (_event, ...args) => {
+      if (LOCKED_CHANNELS.has(channel) && !auth.isAllowed()) return LOCKED_RESULT
       try {
         return await fn(...args)
       } catch (e) {
@@ -716,8 +843,13 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // أدوات المطوّر (Ctrl+Shift+I) في النسخة المثبّتة كانت تتيح استدعاء قنوات التوقيع مباشرة
+      devTools: isDev,
     },
   })
+
+  // إعادة تحميل الواجهة = جلسة جديدة تبدأ مقفلة ⇒ نقفل العملية الرئيسية أيضاً
+  win.webContents.on('did-navigate', () => { auth.lock() })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//.test(url)) void shell.openExternal(url)
@@ -753,7 +885,7 @@ app.on('window-all-closed', () => {
 // harden: never allow navigation away from the local app
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-navigate', (event, url) => {
-    const allowed = url.startsWith('http://localhost:') || url.startsWith('file://')
+    const allowed = url.startsWith('file://') || (isDev && url.startsWith('http://localhost:'))
     if (!allowed) event.preventDefault()
   })
 })

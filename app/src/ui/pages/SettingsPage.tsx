@@ -9,6 +9,7 @@ import {
   type CfNamespaceInfo, type NamespaceRole,
 } from '../../core/settings.ts'
 import { audit } from '../../data/actions.ts'
+import { hashPassword, validatePasswordStrength } from '../../core/password.ts'
 import { Btn, Field, useToast, Badge, ConfirmDialog } from '../components/ui.tsx'
 import { useUpdatesStore } from '../../stores/updates.store.ts'
 import { DEV_PUBLIC_KEY_LABEL } from '../../core/licenseInfo.ts'
@@ -44,7 +45,7 @@ export function SettingsPage() {
 
   // بيانات المالك المحفوظة على الجهاز (لا تُمسّ عند التحديث) + اللقطات الاحتياطية
   useEffect(() => {
-    if (!isDesktop) return
+    if (!isDesktop()) return
     void bridge.app.dataInfo().then(setDataInfo).catch(() => setDataInfo(null))
   }, [])
   const [nsList, setNsList] = useState<CfNamespaceInfo[]>([])
@@ -53,7 +54,10 @@ export function SettingsPage() {
   const [createdNs, setCreatedNs] = useState<string | null>(null)
 
   useEffect(() => { setAccountId(cfAccountId); setNsLicense(cfNsLicense || LICENSE_NS_DEFAULT); setNsServices(cfNsServices); setChatId(adminChatId) }, [cfAccountId, cfNsLicense, cfNsServices, adminChatId])
-  useEffect(() => { void bridge.license.checkKey().then(setKeyStatus) }, [hasPrivateKey])
+  useEffect(() => {
+    // في المتصفح checkKey يرمي (سطح المكتب فقط) — بلا catch كان رفضاً غير معالج عند كل فتح للإعدادات
+    void bridge.license.checkKey().then(setKeyStatus).catch(() => setKeyStatus(null))
+  }, [hasPrivateKey])
   useEffect(() => { initUpdates() }, [initUpdates])
 
   /** يجلب المساحات من Cloudflare ويرشّح دور كل واحدة تلقائياً ثم يملأ الحقول */
@@ -190,7 +194,9 @@ export function SettingsPage() {
       const check = await bridge.license.checkKey()
       setKeyStatus(check)
       setPrivateKey('')
-      if (check.present && !check.matchesPublic) {
+      if (!check.present) {
+        toast('لم يُحفظ المفتاح — تعذر قراءته بعد الحفظ، أعد اللصق', 'error')
+      } else if (!check.matchesPublic) {
         toast('⚠️ المفتاح محفوظ لكنه لا يطابق المفتاح العام في التطبيق — لن تُقبل المفاتيح الصادرة به', 'error')
       } else {
         toast('✅ تم استيراد المفتاح الخاص — التوقيع يتم محلياً الآن', 'ok')
@@ -223,7 +229,7 @@ export function SettingsPage() {
           {hasBotToken && adminChatId ? <div className="muted" style={{ marginBlockStart: 6 }}>البوت جاهز {botUsername ? ` (@${botUsername})` : ''} — يمكنك الاستعادة الآن.</div>
             : <div className="muted" style={{ marginBlockStart: 6 }}>⚠️ أكمل إعدادات البوت بالأسفل أولاً حتى تعمل الاستعادة.</div>}
         </div>
-        <Btn onClick={() => toast('استخدم زر «نسيت كلمة المرور؟» في شاشة القفل، أو اقفل اللوحة ثم اضغطه', 'info')}>طلب رمز التغيير</Btn>
+        <ChangePasswordForm />
         <div className="hr" />
         <div className="muted" style={{ fontSize: 12.5 }}>
           حماية إضافية: رمز OTP صالح 5 دقائق، و3 محاولات كحد أقصى، والرمز لا يُخزَّن نصاً (بصمة SHA-256 فقط).
@@ -408,19 +414,21 @@ export function SettingsPage() {
         ) : null}
         <div className="row" style={{ justifyContent: 'flex-end' }}>
           <Btn
-            disabled={!isDesktop}
-            onClick={() => void bridge.app.openDataFolder().then((r) => { if (!r.ok) toast(r.error ?? 'تعذر فتح المجلد', 'error') })}
+            disabled={!isDesktop()}
+            onClick={() => void bridge.app.openDataFolder()
+              .then((r) => { if (!r.ok) toast(r.error ?? 'تعذر فتح المجلد', 'error') })
+              .catch((e: unknown) => toast(e instanceof Error ? e.message : String(e), 'error'))}
           >
             📂 فتح مجلد البيانات
           </Btn>
           <Btn
             kind="primary"
-            disabled={!isDesktop}
+            disabled={!isDesktop()}
             onClick={() => void bridge.app.snapshotData().then((r) => {
               if (r.error) { toast(r.error, 'error'); return }
               toast(r.created ? 'تم أخذ لقطة احتياطية الآن' : 'البيانات بلا تغيير — اللقطة السابقة كافية', 'ok')
               void bridge.app.dataInfo().then(setDataInfo).catch(() => {})
-            })}
+            }).catch((e: unknown) => toast(e instanceof Error ? e.message : String(e), 'error'))}
           >
             🛡️ نسخة احتياطية الآن
           </Btn>
@@ -459,3 +467,53 @@ export function SettingsPage() {
 }
 
 export { maskToken }
+
+/**
+ * تغيير كلمة المرور واللوحة مفتوحة: الحالية ثم الجديدة. (الزر السابق كان يعرض تلميحاً فقط.)
+ * التحقق من الحالية يتم في العملية الرئيسية بالملح المخزّن، والحفظ مسموح لأن الجلسة مفتوحة.
+ */
+export function ChangePasswordForm() {
+  const toast = useToast()
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [next2, setNext2] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit() {
+    const err = validatePasswordStrength(next)
+    if (err) { toast(err, 'error'); return }
+    if (next !== next2) { toast('كلمتا المرور الجديدتان غير متطابقتين', 'error'); return }
+    if (next === current) { toast('كلمة المرور الجديدة مطابقة للحالية', 'error'); return }
+    setBusy(true)
+    try {
+      const v = await bridge.auth.verifyPassword(current)
+      if (!v.ok) {
+        toast(v.code === 'cooldown' ? `محاولات كثيرة — انتظر ${Math.ceil((v.retryInMs ?? 30000) / 1000)} ثانية` : 'كلمة المرور الحالية غير صحيحة', 'error')
+        return
+      }
+      await bridge.auth.setPassword(await hashPassword(next))
+      await audit('password_change', undefined, {})
+      setCurrent(''); setNext(''); setNext2('')
+      toast('تم تغيير كلمة المرور ✓', 'ok')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <Field label="كلمة المرور الحالية" value={current} onChange={setCurrent} type="password" />
+      <div className="grid-2">
+        <Field label="كلمة المرور الجديدة" value={next} onChange={setNext} type="password" />
+        <Field label="تأكيد الجديدة" value={next2} onChange={setNext2} type="password" />
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <Btn kind="primary" disabled={busy || !current || !next} onClick={() => void submit()}>
+          {busy ? 'جارٍ الحفظ…' : 'تغيير كلمة المرور'}
+        </Btn>
+      </div>
+    </div>
+  )
+}

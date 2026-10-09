@@ -7,7 +7,7 @@
  */
 
 import type { KvNamespace } from '../core/kv.ts'
-import type { PasswordHash } from '../core/password.ts'
+import { verifyPassword as verifyStoredPassword, type PasswordHash } from '../core/password.ts'
 import type { AuditEntry } from '../core/audit.ts'
 import type { DeveloperProfile } from '../core/settings.ts'
 
@@ -33,7 +33,7 @@ export interface SecretsPatch {
 }
 
 /** رموز أخطاء موحّدة بين العملية الرئيسية والواجهة */
-export type CfErrorCode = 'ns_missing' | 'no_token' | 'no_account' | 'auth' | 'cf_error'
+export type CfErrorCode = 'ns_missing' | 'no_token' | 'no_account' | 'auth' | 'cf_error' | 'locked'
 
 export interface CfListResult {
   ok: boolean
@@ -129,6 +129,39 @@ export interface DataInfo {
   lastBackupAt: string | null
 }
 
+export interface AuthVerifyResult {
+  ok: boolean
+  /** wrong = كلمة خاطئة · cooldown = محاولات كثيرة (انتظر retryInMs) · no_password = لم تُنشأ بعد */
+  code?: 'wrong' | 'cooldown' | 'no_password'
+  retryInMs?: number
+  attemptsLeft?: number
+}
+
+export interface OtpRequestResult {
+  ok: boolean
+  expiresAt?: number
+  maxAttempts?: number
+  code?: string
+  error?: string
+}
+
+export interface OtpResetResult {
+  ok: boolean
+  code?: 'invalid' | 'no_otp' | 'expired' | 'locked' | 'wrong'
+  attemptsLeft?: number
+  error?: string
+}
+
+/** نتيجة IPC → نجاح فقط إن كانت ok === true حرفياً (كائن { ok:false } «صحيح» في JS). */
+function isOk(r: unknown): r is { ok: true } {
+  return typeof r === 'object' && r !== null && (r as { ok?: unknown }).ok === true
+}
+
+function errorOf(r: unknown, fallback: string): string {
+  const e = typeof r === 'object' && r !== null ? (r as { error?: unknown }).error : undefined
+  return typeof e === 'string' && e ? e : fallback
+}
+
 export interface ControlerBridge {
   runtime: 'electron' | 'web'
   app: {
@@ -139,7 +172,17 @@ export interface ControlerBridge {
   }
   setup: { isComplete(): Promise<{ hasProfile: boolean; hasPassword: boolean }> }
   profile: { get(): Promise<DeveloperProfile | null>; save(p: DeveloperProfile): Promise<void> }
-  auth: { setPassword(h: PasswordHash): Promise<void>; verifyPassword(h: PasswordHash): Promise<boolean> }
+  auth: {
+    /** يرمي عند الرفض (صيغة غير صالحة، أو اللوحة مقفلة وتوجد كلمة مرور) */
+    setPassword(h: PasswordHash): Promise<void>
+    /** كلمة المرور نفسها — التحقق بالملح المخزّن يتم في العملية الرئيسية */
+    verifyPassword(password: string): Promise<AuthVerifyResult>
+    lock(): Promise<void>
+    /** يولّد رمز الاستعادة ويرسله لتليجرام من العملية الرئيسية (الرمز لا يمر بالواجهة) */
+    requestOtp(purposeAr: string): Promise<OtpRequestResult>
+    resetWithOtp(code: string, h: PasswordHash): Promise<OtpResetResult>
+  }
+  /** set يرمي عند الرفض (مثل مفتاح توقيع لا يطابق المفتاح العام) */
   secrets: { status(): Promise<SecretsStatus>; set(p: SecretsPatch): Promise<void> }
   cf: {
     listKeys(ns: KvNamespace, prefix?: string, cursor?: string): Promise<CfListResult>
@@ -205,12 +248,15 @@ function webBridge(): ControlerBridge {
     },
     auth: {
       setPassword: async (h) => write('controler:password', h),
-      verifyPassword: async (h) => {
+      verifyPassword: async (password) => {
         const stored = read<PasswordHash | null>('controler:password', null)
-        if (!stored) return false
-        // comparison only — the web fallback never sees the plain password
-        return stored.salt === h.salt && stored.hash === h.hash && stored.iterations === h.iterations
+        if (!stored || typeof stored.salt !== 'string' || typeof stored.hash !== 'string') return { ok: false, code: 'no_password' }
+        // يُعاد الاشتقاق بالملح المخزّن (التجزئة بملح جديد لا تطابق أبداً)
+        return (await verifyStoredPassword(password, stored)) ? { ok: true } : { ok: false, code: 'wrong' }
       },
+      lock: async () => {},
+      requestOtp: async () => ({ ok: false, error: DESKTOP_ONLY }),
+      resetWithOtp: async () => ({ ok: false, error: DESKTOP_ONLY }),
     },
     secrets: {
       status: async () => ({
@@ -265,8 +311,35 @@ function desktopBridge(): ControlerBridge | null {
     },
     setup: { isComplete: () => invoke('setup:isComplete') },
     profile: { get: () => invoke('profile:get'), save: (p) => invoke('profile:save', p) },
-    auth: { setPassword: (h) => invoke('auth:setPassword', h), verifyPassword: (h) => invoke('auth:verifyPassword', h) },
-    secrets: { status: () => invoke('secrets:status'), set: (p) => invoke('secrets:set', p) },
+    auth: {
+      setPassword: async (h) => {
+        const r = await invoke<unknown>('auth:setPassword', h)
+        if (!isOk(r)) throw new Error(errorOf(r, 'تعذر حفظ كلمة المرور'))
+      },
+      verifyPassword: async (password) => {
+        const r = await invoke<unknown>('auth:verifyPassword', password)
+        if (isOk(r)) return { ok: true }
+        const o = (typeof r === 'object' && r !== null ? r : {}) as AuthVerifyResult & { error?: string }
+        if (o.error && !o.code) throw new Error(o.error) // خطأ فعلي (مثل ملف كلمة مرور تالف) — ليس «كلمة خاطئة»
+        return { ok: false, code: o.code ?? 'wrong', retryInMs: o.retryInMs, attemptsLeft: o.attemptsLeft }
+      },
+      lock: async () => { await invoke('auth:lock') },
+      requestOtp: async (purposeAr) => {
+        const r = await invoke<unknown>('auth:requestOtp', purposeAr)
+        return isOk(r) ? (r as OtpRequestResult) : { ...(r as object), ok: false, error: errorOf(r, 'تعذر إرسال الرمز') }
+      },
+      resetWithOtp: async (code, h) => {
+        const r = await invoke<unknown>('auth:resetWithOtp', code, h)
+        return isOk(r) ? { ok: true } : { ...(r as object), ok: false, error: errorOf(r, 'تعذر تعيين كلمة المرور') }
+      },
+    },
+    secrets: {
+      status: () => invoke('secrets:status'),
+      set: async (p) => {
+        const r = await invoke<unknown>('secrets:set', p)
+        if (!isOk(r)) throw new Error(errorOf(r, 'تعذر حفظ الإعدادات'))
+      },
+    },
     cf: {
       listKeys: (ns, prefix, cursor) => invoke('cf:request', { ns, op: 'listKeys', prefix, cursor }),
       get: (ns, key) => invoke('cf:request', { ns, op: 'get', key }),

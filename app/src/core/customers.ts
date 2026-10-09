@@ -66,25 +66,92 @@ export interface CustomerView {
   status: CustomerStatus
   lastActivityAt: string | null
   lastSupportAt: string | null
+  /** آخر رسالة في محادثة الدعم من العميل (لم يُرد عليها بعد) */
+  supportUnread: boolean
   message: string
+}
+
+/** جهاز له محادثة دعم بلا سجل dev: (لم يُفعَّل بعد) — يظهر في صفحة الدعم رغم ذلك */
+export interface ChatOnlyDevice {
+  deviceId: string
+  lastSupportAt: string | null
+  supportUnread: boolean
+}
+
+/**
+ * ملخص محادثة chat:<deviceId> الخام: عدد الرسائل الصالحة، وقت آخر رسالة، وهل آخرها من العميل.
+ * يتسامح مع عناصر بشكل غير متوقع (يتخطاها) ولا يرمي أبداً.
+ */
+export function parseChatSummary(raw: string | null): { count: number; lastAt: string | null; unread: boolean } {
+  if (!raw) return { count: 0, lastAt: null, unread: false }
+  let arr: unknown
+  try { arr = JSON.parse(raw) } catch { return { count: 0, lastAt: null, unread: false } }
+  if (!Array.isArray(arr)) return { count: 0, lastAt: null, unread: false }
+  const msgs = arr.filter((m): m is { from: string; at?: unknown } =>
+    m != null && typeof m === 'object' && ((m as { from?: unknown }).from === 'client' || (m as { from?: unknown }).from === 'developer'))
+  const last = msgs[msgs.length - 1]
+  return {
+    count: msgs.length,
+    lastAt: last && typeof last.at === 'string' ? last.at : null,
+    unread: last?.from === 'client',
+  }
 }
 
 export function parseDevRecord(raw: string | null): DevRecord {
   if (!raw) return {}
   try {
     const o = JSON.parse(raw)
-    return o && typeof o === 'object' ? o as DevRecord : {}
+    // مصفوفة «كائن» في JS — كانت تُقبل سجلاً للجهاز
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return {}
+    const rec = o as DevRecord
+    // حقول نصية بنوع خاطئ تُسقط بدل أن تُعطّل التصفية (toLowerCase) أو البحث عن البصمة
+    for (const f of ['plan', 'customer', 'message', 'fingerprint', 'activityId'] as const) {
+      if (rec[f] != null && typeof rec[f] !== 'string') delete rec[f]
+    }
+    if (rec.expiresAt != null && typeof rec.expiresAt !== 'string') delete rec.expiresAt
+    return rec
   } catch {
     return {}
   }
+}
+
+const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+const nonNegInt = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : undefined
+
+/**
+ * الحمولة كما خُزّنت مع تنقية الأنواع: features/extraModules مصفوفات نصوص، الإضافات أرقام،
+ * customer نص. سجل تالف (مثلاً features نص) كان يُسقط الصفحة عند ‎.map‎ أو ‎.toLowerCase‎.
+ */
+function sanitizePayload(p: unknown): LicensePayload | null {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+  const o = p as Record<string, unknown>
+  if (typeof o.plan !== 'string' || !o.plan) return null
+  const out: LicensePayload = {
+    ...(o as unknown as LicensePayload),
+    customer: typeof o.customer === 'string' ? o.customer : '',
+    plan: o.plan as LicensePlan,
+    features: strArr(o.features) as LicenseFeature[],
+    issuedAt: typeof o.issuedAt === 'string' ? o.issuedAt : '',
+    expiresAt: typeof o.expiresAt === 'string' ? o.expiresAt : null,
+  }
+  const eu = nonNegInt(o.extraUsers)
+  const eb = nonNegInt(o.extraBranches)
+  if (eu === undefined) delete out.extraUsers; else out.extraUsers = eu
+  if (eb === undefined) delete out.extraBranches; else out.extraBranches = eb
+  if (o.extraModules === undefined) delete out.extraModules; else out.extraModules = strArr(o.extraModules)
+  if (o.activityId != null && typeof o.activityId !== 'string') delete out.activityId
+  return out
 }
 
 export function parseLicRecord(raw: string | null): LicRecord | null {
   if (!raw) return null
   try {
     const o = JSON.parse(raw)
-    if (!o || typeof o !== 'object' || !o.payload || !o.key) return null
-    return o as LicRecord
+    if (!o || typeof o !== 'object' || Array.isArray(o) || typeof o.key !== 'string' || !o.key) return null
+    const payload = sanitizePayload(o.payload)
+    if (!payload) return null
+    return { ...(o as LicRecord), payload, issuedAt: typeof o.issuedAt === 'string' ? o.issuedAt : '' }
   } catch {
     return null
   }
@@ -185,16 +252,7 @@ export function buildCustomerViews(input: BuildViewsInput): CustomerView[] {
     const plan = (payload?.plan ?? dev.plan ?? '') as string
     const expiresAt = payload ? payload.expiresAt : (dev.expiresAt ?? null)
     const log = logByDevice.get(deviceId)
-    const chatRaw = chatByDevice.get(deviceId)
-    let lastSupportAt: string | null = null
-    if (chatRaw) {
-      try {
-        const chat = JSON.parse(chatRaw) as { at?: string }[]
-        if (Array.isArray(chat) && chat.length && typeof chat[chat.length - 1]?.at === 'string') {
-          lastSupportAt = chat[chat.length - 1].at as string
-        }
-      } catch { /* ignore */ }
-    }
+    const chat = parseChatSummary(chatByDevice.get(deviceId) ?? null)
     views.push({
       deviceId,
       customer: payload?.customer ?? dev.customer ?? '',
@@ -213,7 +271,8 @@ export function buildCustomerViews(input: BuildViewsInput): CustomerView[] {
       lastSeenAt: typeof dev.lastSeenAt === 'string' ? dev.lastSeenAt : null,
       status: computeStatus({ plan, expiresAt: expiresAt ?? null, revokedFingerprint, todayIso: input.todayIso }),
       lastActivityAt: log?.length ? log[log.length - 1].at : null,
-      lastSupportAt,
+      lastSupportAt: chat.lastAt,
+      supportUnread: chat.unread,
       message: dev.message ?? '',
     })
   }
@@ -230,12 +289,29 @@ export const STATUS_LABELS_AR: Record<CustomerStatus, string> = {
 
 export type CustomerSortKey = 'customer' | 'expiresAt' | 'lastActivityAt' | 'status'
 
+/** ترتيب الحالة بالأهمية (يحتاج تدخلاً أولاً) — وليس أبجدياً بالأسماء الإنجليزية */
+export const STATUS_RANK: Record<CustomerStatus, number> = { expiring: 0, expired: 1, revoked: 2, active: 3, none: 4 }
+
+/**
+ * الترتيب: الحالة بالأهمية؛ الانتهاء بالتاريخ والدائم (null) في الآخر تصاعدياً؛ وأي قيمة فارغة
+ * (بلا نشاط) تذهب للآخر في الاتجاهين. التعادل يُحسم باسم العميل ثم المعرّف ليثبت الترتيب.
+ */
 export function sortCustomers(list: readonly CustomerView[], key: CustomerSortKey, direction: 'asc' | 'desc' = 'asc'): CustomerView[] {
   const dir = direction === 'asc' ? 1 : -1
+  const tie = (a: CustomerView, b: CustomerView) =>
+    a.customer.localeCompare(b.customer, 'ar') || a.deviceId.localeCompare(b.deviceId)
   return [...list].sort((a, b) => {
-    const va = a[key] ?? ''
-    const vb = b[key] ?? ''
-    return String(va).localeCompare(String(vb), 'ar') * dir
+    if (key === 'status') return (STATUS_RANK[a.status] - STATUS_RANK[b.status]) * dir || tie(a, b)
+    if (key === 'customer') return (a.customer.localeCompare(b.customer, 'ar') || a.deviceId.localeCompare(b.deviceId)) * dir
+    const va = a[key]
+    const vb = b[key]
+    // expiresAt: null = دائم ⇒ «أبعد» تاريخ (آخر تصاعدياً، أول تنازلياً)؛ lastActivityAt: null = بلا نشاط ⇒ آخراً دائماً
+    if (va == null || vb == null) {
+      if (va == null && vb == null) return tie(a, b)
+      if (key === 'expiresAt') return (va == null ? 1 : -1) * dir
+      return va == null ? 1 : -1
+    }
+    return (va < vb ? -1 : va > vb ? 1 : 0) * dir || tie(a, b)
   })
 }
 

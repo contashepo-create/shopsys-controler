@@ -42,18 +42,37 @@ export function SetupPage() {
   async function finishAccount() {
     const err = validateProfile({ name, phone, email })
     if (err) { toast(err, 'error'); return }
-    await bridge.profile.save({ name: name.trim(), phone: phone.trim(), email: email.trim() })
-    setProfile({ name: name.trim(), phone: phone.trim(), email: email.trim() })
-    setStep(1)
+    if (busy) return
+    setBusy(true)
+    try {
+      await bridge.profile.save({ name: name.trim(), phone: phone.trim(), email: email.trim() })
+      setProfile({ name: name.trim(), phone: phone.trim(), email: email.trim() })
+      setStep(1)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function finishPassword() {
     const err = validatePasswordStrength(pw1)
     if (err) { toast(err, 'error'); return }
     if (pw1 !== pw2) { toast('كلمتا المرور غير متطابقتين', 'error'); return }
-    const h: PasswordHash = await hashPassword(pw1)
-    await bridge.auth.setPassword(h)
-    setStep(2)
+    if (busy) return
+    setBusy(true)
+    try {
+      const h: PasswordHash = await hashPassword(pw1)
+      await bridge.auth.setPassword(h)
+      // تأكيد أن ما حُفظ يُفتح فعلاً بنفس الكلمة (قبل التحقق الصحيح بالملح كانت هذه الخطوة تمر دائماً)
+      const check = await bridge.auth.verifyPassword(pw1)
+      if (!check.ok) { toast('تعذر التحقق من كلمة المرور المحفوظة — أعد المحاولة', 'error'); return }
+      setStep(2)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function finishCloudflare(skip: boolean) {
@@ -77,11 +96,14 @@ export function SetupPage() {
   }
 
   async function verifyAndContinue() {
-    // safety check that the password was persisted
-    const h = await hashPassword(pw2 || pw1)
-    const ok = await bridge.auth.verifyPassword(h)
-    if (!ok) toast('تعذر حفظ كلمة المرور — أعد المحاولة', 'error')
-    else { unlock(); navigate('/dashboard') }
+    // safety check that the password was persisted (التحقق بالملح المخزّن في العملية الرئيسية)
+    try {
+      const res = await bridge.auth.verifyPassword(pw1)
+      if (!res.ok) toast('تعذر حفظ كلمة المرور — أعد المحاولة', 'error')
+      else { unlock(); navigate('/dashboard') }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error')
+    }
   }
 
   return (

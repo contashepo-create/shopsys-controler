@@ -49,7 +49,7 @@ export function CustomersPage() {
   }, [focusDevice, customers, setParams])
 
   const selected = useMemo(() => customers.find((c) => c.deviceId === selectedId) ?? null, [customers, selectedId])
-  const list = useMemo(() => sortCustomers(filterCustomers(customers, q, status), sortKey), [customers, q, status, sortKey])
+  const list = useMemo(() => sortCustomers(filterCustomers(customers, q, status), sortKey, sortKey === 'lastActivityAt' ? 'desc' : 'asc'), [customers, q, status, sortKey])
 
   async function doDeactivate(c: CustomerView) {
     setConfirmDeactivate(null)

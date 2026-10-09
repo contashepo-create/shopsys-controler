@@ -7,10 +7,11 @@ directories:
   output: release
   buildResources: desktop/build
 # قائمة صريحة: الواجهة المبنية + عملية Electron الرئيسية + ملف العزل.
-# (إغفال desktop/*.cjs يُنتج مثبّتاً لا يعمل — main يشير إليه package.json)
+# (إغفال أي من desktop/*.cjs — ومنها auth.cjs الذي يطلبه main — يُنتج مثبّتاً لا يعمل — main يشير إليه package.json)
 files:
   - dist/**/*
   - desktop/main.cjs
+  - desktop/auth.cjs
   - desktop/preload.cjs
   - package.json
 # لا وحدات أصلية — كل التخزين JSON + WebCrypto (بناء المثبّت من أي نظام)

@@ -76,7 +76,13 @@ export function createFakeBridge(): FakeBridge {
     app: { version: async () => 'test', dataInfo: notUsed, openDataFolder: notUsed, snapshotData: notUsed },
     setup: { isComplete: async () => ({ hasProfile: true, hasPassword: true }) },
     profile: { get: async () => null, save: async () => {} },
-    auth: { setPassword: async () => {}, verifyPassword: async () => true },
+    auth: {
+      setPassword: async () => {},
+      verifyPassword: async () => ({ ok: true }),
+      lock: async () => {},
+      requestOtp: async () => ({ ok: true, expiresAt: Date.now() + 300_000 }),
+      resetWithOtp: async () => ({ ok: true }),
+    },
     secrets: { status: notUsed, set: notUsed },
     cf: {
       listKeys: (ns, prefix = '', cursor) => track(() => {
