@@ -18,7 +18,6 @@ export type AuditAction =
   | 'notice_delete'
   | 'license_send'
   | 'about_update'
-  | 'version_update'
   | 'settings_global_update'
   | 'support_reply'
   | 'password_change'
@@ -50,7 +49,6 @@ export const AUDIT_ACTION_LABELS_AR: Record<AuditAction, string> = {
   notice_delete: 'حذف إشعار',
   license_send: 'إرسال المفتاح للعميل',
   about_update: 'تحديث «حول»',
-  version_update: 'نشر تحديث',
   settings_global_update: 'تحديث الإعدادات العامة',
   support_reply: 'رد على دعم',
   password_change: 'تغيير كلمة المرور',
