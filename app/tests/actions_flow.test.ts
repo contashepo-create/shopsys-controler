@@ -39,7 +39,7 @@ function viewsFromKv() {
 beforeEach(() => { h.fake.reset() })
 
 describe('issueLicense — الإصدار وما يُكتب في KV', () => {
-  it('جهاز جديد: يكتب lic: وdev: وlog: وsub: ومفتاحاً يتحقق منه تطبيق العميل', async () => {
+  it('جهاز جديد: يكتب lic: وdev: وlog: وsub: (بلا مفتاح)، والمفتاح يتحقق منه تطبيق العميل', async () => {
     const res = await actions.issueLicense(baseInput({ activityId: 'grocery', extraModules: ['cars'] }))
     const payload = await verifyLicenseKey(res.key, DEV, h.fake.signer.publicKeyB64u)
     expect(payload).toMatchObject({ deviceId: DEV, customer: 'بقالة النور', plan: 'basic', activityId: 'grocery', extraModules: ['cars'] })
@@ -53,7 +53,11 @@ describe('issueLicense — الإصدار وما يُكتب في KV', () => {
     const log = h.fake.json<{ text: string }[]>('license', `log:${DEV}`)!
     expect(log).toHaveLength(1)
     expect(log[0].text).toContain('تفعيل basic')
-    expect(h.fake.json('services', `sub:${DEV}`)).toMatchObject({ plan: 'basic', key: res.key, fingerprint: res.fingerprint })
+    // sub: نسخة ثانوية لبوت الخدمات — بلا المفتاح ولا بصمته (لا يقرؤهما أحد)
+    const sub = h.fake.json<Record<string, unknown>>('services', `sub:${DEV}`)!
+    expect(sub).toMatchObject({ plan: 'basic' })
+    expect(sub).not.toHaveProperty('key')
+    expect(sub).not.toHaveProperty('fingerprint')
     expect(res.notes).toEqual([])
     expect(h.fake.audit.map((a) => a.action)).toEqual(['license_issue'])
   })

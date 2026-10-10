@@ -73,8 +73,10 @@ export interface ModuleSplit {
   addable: string[]
 }
 
-export function splitModules(input: { activityId?: string | null; owned: readonly string[]; showAll?: boolean }): ModuleSplit {
-  const included = input.showAll ? [] : modulesIncludedInActivity(input.activityId).filter((m) => EXTRA_MODULES.includes(m))
+export function splitModules(input: { activityId?: string | null; owned: readonly string[] }): ModuleSplit {
+  /* الافتراضية من النشاط (حسب نسخة اللوحة المطابقة لتطبيق العميل) — تُعرض مفعّلة ولا تُسحب،
+     ولا تُخفى: الواجهة تعرض كل الوحدات. */
+  const included = modulesIncludedInActivity(input.activityId).filter((m) => EXTRA_MODULES.includes(m))
   const owned = finalModules(input.owned)
   const taken = new Set([...included, ...owned])
   return { included: [...included], owned, addable: EXTRA_MODULES.filter((m) => !taken.has(m)) }

@@ -133,6 +133,8 @@ describe('revokeLicense', () => {
 
   it('يزيل المفتاح المحروق من sub: فقط إن كان هو نفسه، ويعلّم السجل', async () => {
     const res = await actions.issueLicense(base())
+    // نسخة قديمة (قبل إزالة المفتاح من sub:) تحمل المفتاح — الحرق ينظّفها
+    h.fake.seed('services', `sub:${DEV}`, { plan: 'basic', expiresAt: null, message: '', key: res.key, fingerprint: res.fingerprint })
     expect(h.fake.json('services', `sub:${DEV}`)).toMatchObject({ key: res.key })
     const r = await actions.revokeLicense(res.key)
     expect(r.fingerprint).toBe(res.fingerprint)
@@ -149,6 +151,7 @@ describe('revokeLicense', () => {
   it('مفتاح قديم لا يطابق sub: الحالي → sub: لا يُمس', async () => {
     const old = await actions.issueLicense(base({ days: 10 }))
     const cur = await actions.issueLicense(base({ days: 20 }))
+    h.fake.seed('services', `sub:${DEV}`, { plan: 'basic', expiresAt: null, message: '', key: cur.key, fingerprint: cur.fingerprint })
     await actions.revokeLicense(old.fingerprint)
     expect(h.fake.json('services', `sub:${DEV}`)).toMatchObject({ key: cur.key, fingerprint: cur.fingerprint })
   })

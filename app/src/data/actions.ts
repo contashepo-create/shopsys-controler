@@ -92,12 +92,12 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   const entryText = `${opts.renew ? 'تجديد' : 'تفعيل'} ${payload.plan} حتى ${payload.expiresAt ?? 'مدى الحياة'} — ${payload.customer}${payload.activityId ? ` — نشاط: ${payload.activityId}` : ''}`
   if (!await appendLog(input.deviceId, entryText)) notes.push('صدر المفتاح لكن تعذر تسجيله في سجل الجهاز')
 
-  // بطاقة الاشتراك في مساحة الخدمات (يقرأها worker التطبيق من /subscription)
+  // بطاقة الاشتراك في مساحة الخدمات: نسخة ثانوية لتذكير/إحصائيات بوت الخدمات (cloud/worker.js).
+  // المصدر الحقيقي للاستحقاق هو dev: (بوت المركز). لا تحمل المفتاح ولا بصمته: لا يقرأهما بوت الخدمات
+  // ولا التطبيق (التطبيق لا يطبّق مفاتيح من السحابة)، والإبطال يزيل النسخ القديمة التي تحملهما.
   // أفضل جهد: غياب مساحة الخدمات لا يجوز أن يُلغي مفتاحاً صدر فعلاً في مساحة التراخيص
   const subMirror = await bridge.cf.put('services', `sub:${input.deviceId}`, JSON.stringify({
     plan: payload.plan, expiresAt: payload.expiresAt, message: '', customer: payload.customer, issuedAt: payload.issuedAt,
-    // المفتاح نفسه مربوط بالجهاز (لا يعمل على غيره) — متاح للتطبيق ليطبّقه تلقائياً عند المزامنة
-    key, fingerprint,
   }))
   if (!subMirror.ok) {
     notes.push(subMirror.code === 'ns_missing' ? 'لم تُحدَّث بطاقة الاشتراك السحابية: مساحة الخدمات غير مضبوطة' : `لم تُحدَّث بطاقة الاشتراك: ${subMirror.error ?? ''}`)

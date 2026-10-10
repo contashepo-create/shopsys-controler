@@ -145,18 +145,21 @@ describe('جهاز جديد (صفحة إصدار المفاتيح)', () => {
 })
 
 describe('عميل موجود (بطاقة العميل)', () => {
-  it('أقسام النشاط لا تُعرض للإضافة، وما عنده يظهر محدداً تحت «عنده الآن»', async () => {
+  it('لا إخفاء للأقسام: الافتراضية من النشاط ظاهرة مفعّلة ولا تُسحب، وكل قسم آخر قابل للمنح', async () => {
     renderForm({ customer: customer() })
     await waitFor(() => expect(inputOf('اسم العميل *').value).toBe('بقالة النور'))
-    // أغذية/سوبر ماركت تتضمن نقطة البيع والمخزون والمشتريات والوصفات (قالب التطبيق) → لا تظهر للإضافة
-    expect(screen.getByText(/مضمّنة في نشاط «أغذية \/ سوبر ماركت»/).textContent).toContain('نقطة البيع')
-    expect(screen.queryByText('نقطة البيع', { selector: '.chip-check span' })).toBeNull()
-    expect(screen.queryByText('المخزون', { selector: '.chip-check span' })).toBeNull()
-    // السيارات عنده → شريحة واحدة فقط ومحددة
-    expect(screen.getAllByText('السيارات', { selector: '.chip-check span' })).toHaveLength(1)
+    // أغذية/سوبر ماركت تتضمن نقطة البيع والمخزون (قالب التطبيق): ظاهرة، مفعّلة، وغير قابلة للإلغاء
+    expect(screen.getAllByText('نقطة البيع', { selector: '.chip-check span' })).toHaveLength(1)
+    expect(chipBox('نقطة البيع').checked).toBe(true)
+    expect(chipBox('نقطة البيع').disabled).toBe(true)
+    expect(chipBox('المخزون').disabled).toBe(true)
+    expect(chip('نقطة البيع').textContent).toContain('افتراضي في النشاط')
+    // السيارات عنده ولا يتبع النشاط → قابل للسحب بالعلامة
     expect(chipBox('السيارات').checked).toBe(true)
-    expect(chip('بوت تليجرام').textContent).not.toContain('عنده')
-    expect(chip('المزامنة السحابية').textContent).toContain('عنده')
+    expect(chipBox('السيارات').disabled).toBe(false)
+    // قسم غير مملوك ولا افتراضي يبقى قابلاً للمنح
+    expect(chipBox('المختبر').disabled).toBe(false)
+    expect(screen.queryByText(/إظهار كل الأقسام/)).toBeNull()
   })
 
   it('الإبقاء على كل شيء = نفس تاريخ الانتهاء ونفس الأقسام والميزات (لا شيء يُسحب بالخطأ)', async () => {
@@ -220,7 +223,9 @@ describe('عميل موجود (بطاقة العميل)', () => {
     // بلا نشاط: نقطة البيع قابلة للإضافة
     await user.click(chipBox('نقطة البيع'))
     await user.selectOptions(selectOf('النشاط'), 'pharmacy')
-    expect(screen.queryByText('نقطة البيع', { selector: '.chip-check span' })).toBeNull()
+    // صار افتراضياً في الصيدلية: يبقى ظاهراً مفعّلاً ومقفلاً (لا إخفاء)، ولا يُوقَّع لأنه عند العميل من النشاط
+    expect(chipBox('نقطة البيع').checked).toBe(true)
+    expect(chipBox('نقطة البيع').disabled).toBe(true)
     await user.click(submitBtn())
     await waitFor(() => expect(m.issueLicense).toHaveBeenCalled())
     const input = m.issueLicense.mock.calls[0][0]

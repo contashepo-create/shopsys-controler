@@ -38,9 +38,6 @@ describe('الأقسام: لا يُرسَل للعميل قسم موجود عن�
     expect(s.addable).not.toContain('booking')
     expect(s.addable).toContain('installments')
   })
-  it('«إظهار كل الأقسام» يعرض أقسام النشاط للإضافة', () => {
-    expect(splitModules({ activityId: 'grocery', owned: [], showAll: true }).addable).toContain('pos')
-  })
   it('finalModules يزيل التكرار ويرتب قياسياً', () => {
     expect(finalModules(['pos', 'inventory', 'pos'])).toEqual(['pos', 'inventory'])
   })
