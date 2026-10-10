@@ -9,7 +9,7 @@ import {
 import { type CustomerView } from '../../core/customers.ts'
 import { activityDisplay, activityLabel, resolveClientActivity, type ActivitySource } from '../../core/activities.ts'
 import {
-  DERIVED_FEATURES, FALLBACK_DEFAULTS, defaultRenewDays, finalFeatures, splitModules, toCount, totalBranches, totalUsers,
+  DERIVED_FEATURES, FALLBACK_DEFAULTS, defaultRenewDays, daysUntil, durationDays, finalFeatures, splitModules, toCount, totalBranches, totalUsers,
   type GlobalDefaults,
 } from '../../core/issueForm.ts'
 import { Btn, Field, Select, useToast } from './ui.tsx'
@@ -138,7 +138,7 @@ export function IssueForm(props: {
   const signedModules = modules.filter((m) => ownedModules.includes(m) || !split.included.includes(m))
   const removedModules = ownedModules.filter((m) => !modules.includes(m))
   const addedModules = signedModules.filter((m) => !ownedModules.includes(m))
-  const expiry = plan === 'lifetime' ? null : expiresAfterDays(toCount(days) || 365)
+  const expiry = plan === 'lifetime' ? null : expiresAfterDays(durationDays(days))
   const todayIso = new Date().toISOString().slice(0, 10)
   const keepDays = existing?.expiresAt ? defaultRenewDays(existing.expiresAt, todayIso, 0) : 0
   /** «تعدد الفروع» كان عنده وسيُزال لأن الحد الكلي صار فرعاً واحداً */
@@ -172,7 +172,7 @@ export function IssueForm(props: {
         deviceId: normalizedId,
         customer: customerName.trim(),
         plan,
-        days: toCount(days) || 365,
+        days: durationDays(days),
         activityId: activityId || undefined,
         extraUsers: usersExtra,
         extraBranches: branchesExtra,
@@ -264,14 +264,22 @@ export function IssueForm(props: {
             <label>المدة (أيام)</label>
             <input className="input" dir="ltr" value={days} onChange={(e) => setDays(e.target.value)} />
             <div className="row" style={{ gap: 6 }}>
-              {keepDays > 0 ? <Btn size="sm" kind={toCount(days) === keepDays ? 'primary' : 'default'} onClick={() => setDays(String(keepDays))}>إبقاء تاريخه ({existing?.expiresAt})</Btn> : null}
+              {keepDays > 0 ? <Btn size="sm" kind={durationDays(days) === keepDays ? 'primary' : 'default'} onClick={() => setDays(String(keepDays))}>إبقاء تاريخه ({existing?.expiresAt})</Btn> : null}
               {[30, 90, 365].map((d) => (
-                <Btn key={d} size="sm" kind={toCount(days) === d && d !== keepDays ? 'primary' : 'default'} onClick={() => setDays(String(d))}>
+                <Btn key={d} size="sm" kind={durationDays(days) === d && d !== keepDays ? 'primary' : 'default'} onClick={() => setDays(String(d))}>
                   {d === 30 ? 'شهر' : d === 90 ? '3 أشهر' : 'سنة'}
                 </Btn>
               ))}
+              <Btn size="sm" kind={days.trim() === '0' ? 'primary' : 'default'} onClick={() => setDays('0')}>مدى الحياة</Btn>
             </div>
-            <span className="hint">ينتهي في {expiry}{existing?.expiresAt && expiry === existing.expiresAt ? ' — نفس تاريخه الحالي' : ''}</span>
+            <label style={{ marginBlockStart: 6 }}>أو تاريخ انتهاء محدد</label>
+            <input
+              className="input" type="date" dir="ltr" value={expiry ?? ''}
+              onChange={(e) => { const n = daysUntil(todayIso, e.target.value); if (n !== null) setDays(String(n)) }}
+            />
+            <span className="hint">{expiry
+              ? <>ينتهي في {expiry}{existing?.expiresAt && expiry === existing.expiresAt ? ' — نفس تاريخه الحالي' : ''}</>
+              : 'بلا تاريخ انتهاء (مدى الحياة) — الصفر في المدة يعني ذلك'}</span>
           </div>
         )}
         <Field label="فروع إضافية بجانب الفرع الرئيسي" value={extraBranches} onChange={setExtraBranches} dir="ltr" placeholder="0"

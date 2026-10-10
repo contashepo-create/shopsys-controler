@@ -267,11 +267,18 @@ async function handleCfRequest(payload) {
     }
 
     if (op === 'put') {
-      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, {
-        method: 'PUT',
-        headers: { ...headers, 'content-type': 'text/plain; charset=utf-8' },
-        body: String(payload.value ?? ''),
-      })
+      // metadata (فهرس البوت لـ dev:/chat:) لا تُكتب إلا بـmultipart — الكتابة النصية تُسقطها
+      const withMeta = payload.metadata && typeof payload.metadata === 'object'
+      let init
+      if (withMeta) {
+        const form = new FormData()
+        form.append('value', String(payload.value ?? ''))
+        form.append('metadata', JSON.stringify(payload.metadata))
+        init = { method: 'PUT', headers: { authorization: headers.authorization }, body: form }
+      } else {
+        init = { method: 'PUT', headers: { ...headers, 'content-type': 'text/plain; charset=utf-8' }, body: String(payload.value ?? '') }
+      }
+      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, init)
       const text = await res.text()
       if (!res.ok) return cfFail(res.status, text)
       try {

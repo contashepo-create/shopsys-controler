@@ -1,0 +1,330 @@
+diff --git a/app/src/core/featureFlags.ts b/app/src/core/featureFlags.ts
+index 8cb993e..7a5da7e 100644
+--- a/app/src/core/featureFlags.ts
++++ b/app/src/core/featureFlags.ts
+@@ -46,6 +46,22 @@ export function effectiveFeatures(
+   return licensed.filter((f) => !disabled.has(f))
+ }
+ 
++/**
++ * أعلام الجهاز النشطة الآن — تُحدَّث من المتجر عند كل جلب ناجح (setCloudData).
++ * evaluateLicense يطبّقها على الميزات الممنوحة، فتصل الإطفاءات إلى كل بوابة ترخيص
++ * (الفوترة الإلكترونية، بوت التليجرام، الشبكة، المزامنة…) لا إلى المزامنة وحدها.
++ * بلا جلب ناجح (أول تشغيل أو أوفلاين) تبقى الميزات كما منحها المفتاح.
++ */
++let activeFlags: DeviceFlags | null = null
++
++export function setActiveDeviceFlags(flags: DeviceFlags | null): void {
++  activeFlags = flags
++}
++
++export function getActiveDeviceFlags(): DeviceFlags | null {
++  return activeFlags
++}
++
+ /** هل الميزة مطفأة سحابياً رغم أنها ممنوحة؟ (لعرض رسالة «عُطلت مؤقتاً» بدل «غير مشتراة») */
+ export function isCloudDisabled(feature: LicenseFeature, licensed: readonly LicenseFeature[], flags: DeviceFlags | null): boolean {
+   return licensed.includes(feature) && (flags?.disabledFeatures ?? []).includes(feature)
+diff --git a/app/src/core/license.ts b/app/src/core/license.ts
+index 9a658af..d405808 100644
+--- a/app/src/core/license.ts
++++ b/app/src/core/license.ts
+@@ -1,3 +1,5 @@
++import { effectiveFeatures, getActiveDeviceFlags } from './featureFlags.ts'
++
+ /**
+  * الترخيص — ShopSys (المرحلة 5) — منقول مفهومياً من نظام mobileshop (القرار 4)
+  * ─────────────────────────────────────────────────────────────────────────────
+@@ -336,7 +338,8 @@ export function evaluateLicense(args: {
+   if (today < args.lastSeenAt.slice(0, 10)) return { status: 'clock_tampered' }
+ 
+   if (args.activatedPayload) {
+-    const p = args.activatedPayload
++    // إطفاء سحابي (kill-switch): الميزة الممنوحة المُطفأة لا تُعتمد في أي بوابة
++    const p: LicensePayload = { ...args.activatedPayload, features: effectiveFeatures(args.activatedPayload.features, getActiveDeviceFlags()) }
+     if (p.expiresAt === null) return { status: 'active', payload: p, daysLeft: null }
+     if (!isValidIsoDay(p.expiresAt)) return { status: 'invalid', reason: 'تاريخ انتهاء المفتاح غير صالح' }
+     const left = daysBetween(today, p.expiresAt)
+diff --git a/app/src/stores/app.store.ts b/app/src/stores/app.store.ts
+index 1c91b72..1aa818f 100644
+--- a/app/src/stores/app.store.ts
++++ b/app/src/stores/app.store.ts
+@@ -3,6 +3,7 @@
+  * (اليوم: localStorage — غداً: جدول settings في SQLite عبر نفس الواجهة)
+  */
+ import { create } from 'zustand'
++import { setActiveDeviceFlags } from '../core/featureFlags.ts'
+ import { DEFAULT_WAREHOUSE_RECEIPT, type WarehouseReceiptSettings } from '../core/warehouseReceipt.ts'
+ import { persist } from 'zustand/middleware'
+ import type { Country } from '../core/countries.ts'
+@@ -695,14 +696,17 @@ export const useAppStore = create<AppState>()(
+         )),
+       deviceFlags: null,
+       cloudSyncedAt: null,
+-      setCloudData: (patch) =>
++      setCloudData: (patch) => {
++        // الإطفاء يسري فوراً على كل بوابة ترخيص (evaluateLicense يقرأ هذه الحالة)
++        if (patch.flags !== undefined) setActiveDeviceFlags(patch.flags)
+         set((s) => ({
+           cloudAbout: patch.about !== undefined ? patch.about : s.cloudAbout,
+           revokedKeys: patch.revoked !== undefined ? patch.revoked : s.revokedKeys,
+           cloudNotifications: patch.notifications !== undefined ? patch.notifications : s.cloudNotifications,
+           deviceFlags: patch.flags !== undefined ? patch.flags : s.deviceFlags,
+           cloudSyncedAt: new Date().toISOString(),
+-        })),
++        }))
++      },
+       lastHourlyBackupAt: null,
+       setLastHourlyBackupAt: (iso) => set({ lastHourlyBackupAt: iso }),
+       backupIntervalMinutes: 60,
+@@ -728,6 +732,8 @@ export const useAppStore = create<AppState>()(
+            التوقيع. تُعلَّم الحالة `checking` كي لا تُعرض شاشة القفل في نافذة
+            الفحص (وإلا ومضت لعميل مفعّل) — `App.tsx` ينتظرها قبل الحكم. */
+         if (state) {
++          // آخر أعلام محفوظة (وضع الأوفلاين) تسري من أول لحظة قبل أي جلب جديد
++          setActiveDeviceFlags(state.deviceFlags ?? null)
+           state.activatedPayload = null
+           state.licenseAudit = state.activatedKey
+             ? { status: 'checking', at: new Date().toISOString() }
+diff --git a/app/tests/devbot_last_seen_reissue.test.ts b/app/tests/devbot_last_seen_reissue.test.ts
+new file mode 100644
+index 0000000..4cf065d
+--- /dev/null
++++ b/app/tests/devbot_last_seen_reissue.test.ts
+@@ -0,0 +1,99 @@
++/**
++ * بند S1 و S4 (مراجعة التوافق 2026-10-10) على بوت المطوّر:
++ *  S1 — «آخر ظهور» يُكتب على `dev:` عند طلب الجهاز حالته (مُخفَّف كل 6 ساعات).
++ *  S4 — إعادة الإصدار عبر `/اصدر` تحفظ البريد وبقية الحقول بدل استبدال السجل.
++ * الاختبار يشغّل العامل الحقيقي (webhook) مع KV في الذاكرة و fetch مُعترَض.
++ */
++import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
++import { webcrypto } from 'node:crypto'
++import devbotWorker from '../../tools/devbot/src/worker.js'
++import { touchDeviceLastSeen, LAST_SEEN_THROTTLE_MS } from '../../tools/devbot/src/subscriptions.js'
++import { b64uEncode } from '../src/core/license.ts'
++
++const DEV = 'SHOP-AAAA-BBBB-CCCC'
++let privB64 = ''
++
++function memKv(seed: Record<string, string> = {}) {
++  const store = new Map<string, { value: string; metadata: unknown }>(Object.entries(seed).map(([k, v]) => [k, { value: v, metadata: undefined }]))
++  return {
++    store,
++    get: async (k: string) => store.get(k)?.value ?? null,
++    put: async (k: string, v: string, opts?: { metadata?: unknown }) => { store.set(k, { value: v, metadata: opts?.metadata }) },
++  }
++}
++
++beforeAll(async () => {
++  const pair = await webcrypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])
++  privB64 = b64uEncode(new Uint8Array(await webcrypto.subtle.exportKey('pkcs8', pair.privateKey)))
++})
++
++afterEach(() => { vi.unstubAllGlobals() })
++
++describe('S1 — آخر ظهور للجهاز', () => {
++  it('يكتب lastSeenAt عند طلب /subscription مع تحديث metadata', async () => {
++    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'pro', expiresAt: '2027-01-01', customer: 'محل', email: 'a@b.co', message: '', fingerprint: 'ab12cd34' }) })
++    const now = Date.parse('2026-10-10T08:00:00Z')
++    await touchDeviceLastSeen({ kv }, DEV, now)
++    const saved = JSON.parse(kv.store.get(`dev:${DEV}`)!.value)
++    expect(saved.lastSeenAt).toBe('2026-10-10T08:00:00.000Z')
++    expect(saved.email).toBe('a@b.co') // لا يفقد الحقول
++    expect(kv.store.get(`dev:${DEV}`)!.metadata).toMatchObject({ v: 1, plan: 'pro', email: 'a@b.co', expiresAt: '2027-01-01' })
++  })
++
++  it('مُخفَّف: لا كتابة إن كان آخر ظهور أحدث من 6 ساعات', async () => {
++    const recent = '2026-10-10T07:00:00.000Z'
++    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'pro', lastSeenAt: recent }) })
++    const before = kv.store.get(`dev:${DEV}`)!.value
++    await touchDeviceLastSeen({ kv }, DEV, Date.parse(recent) + LAST_SEEN_THROTTLE_MS - 1)
++    expect(kv.store.get(`dev:${DEV}`)!.value).toBe(before)
++    await touchDeviceLastSeen({ kv }, DEV, Date.parse(recent) + LAST_SEEN_THROTTLE_MS)
++    expect(JSON.parse(kv.store.get(`dev:${DEV}`)!.value).lastSeenAt).not.toBe(recent)
++  })
++
++  it('لا يكتب شيئاً لجهاز بلا سجل', async () => {
++    const kv = memKv()
++    await touchDeviceLastSeen({ kv }, DEV)
++    expect(kv.store.size).toBe(0)
++  })
++
++  it('فشل KV لا يُفسد الرد: /subscription يعيد الحالة عادية', async () => {
++    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'pro', expiresAt: null, message: '' }) })
++    kv.put = async () => { throw new Error('KV down') }
++    const res = await devbotWorker.fetch(new Request(`https://shopsys-control/subscription/${DEV}`), { SHOPSYS_CONTROL: kv })
++    expect(res.status).toBe(200)
++    expect(await res.json()).toEqual({ plan: 'pro', expiresAt: null, message: '' })
++  })
++
++  it('المسار /subscription يكتب آخر ظهور فعلياً', async () => {
++    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'basic', expiresAt: null, message: '' }) })
++    const res = await devbotWorker.fetch(new Request(`https://shopsys-control/subscription/${DEV}`), { SHOPSYS_CONTROL: kv })
++    expect(res.status).toBe(200)
++    expect(JSON.parse(kv.store.get(`dev:${DEV}`)!.value).lastSeenAt).toBeTruthy()
++  })
++})
++
++describe('S4 — إعادة الإصدار عبر /اصدر تحفظ السجل', () => {
++  it('يحفظ البريد وlastSeenAt ويحدّث الخطة والانتهاء', async () => {
++    const sent: string[] = []
++    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
++      sent.push(String(init?.body ?? ''))
++      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
++    }))
++    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'basic', expiresAt: '2026-11-01', customer: 'قديم', email: 'owner@shop.eg', lastSeenAt: '2026-10-09T10:00:00.000Z', message: 'موقوف', fingerprint: 'oldfp000' }) })
++    const env = {
++      WEBHOOK_SECRET: 'hook', TELEGRAM_ADMIN_ID: '111', TELEGRAM_BOT_TOKEN: 't', DEV_PRIVATE_KEY_B64U: privB64, SHOPSYS_CONTROL: kv,
++    }
++    const update = { update_id: 1, message: { message_id: 1, from: { id: 111 }, chat: { id: 111 }, text: `/اصدر ${DEV} pro النور 365` } }
++    const res = await devbotWorker.fetch(new Request('https://shopsys-control/telegram/hook', {
++      method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'hook', 'content-type': 'application/json' }, body: JSON.stringify(update),
++    }), env)
++    expect(res.status).toBe(200)
++    const saved = JSON.parse(kv.store.get(`dev:${DEV}`)!.value)
++    expect(saved.plan).toBe('pro')
++    expect(saved.customer).toBe("النور")
++    expect(saved.email).toBe('owner@shop.eg')
++    expect(saved.lastSeenAt).toBe('2026-10-09T10:00:00.000Z')
++    expect(saved.fingerprint).not.toBe('oldfp000')
++    expect(kv.store.get(`dev:${DEV}`)!.metadata).toMatchObject({ plan: 'pro', email: 'owner@shop.eg', customer: "النور" })
++  })
++})
+diff --git a/app/tests/feature_kill_switch.test.ts b/app/tests/feature_kill_switch.test.ts
+new file mode 100644
+index 0000000..fbc8162
+--- /dev/null
++++ b/app/tests/feature_kill_switch.test.ts
+@@ -0,0 +1,53 @@
++/**
++ * الإطفاء السحابي للميزات (kill-switch) يسري على كل بوابة ترخيص:
++ * ميزة ممنوحة بمفتاح موقّع + مُطفأة من المطوّر ⇒ hasFeature = false في كل مكان.
++ */
++import { describe, it, expect, afterEach } from 'vitest'
++import { evaluateLicense, hasFeature, type LicensePayload } from '../src/core/license.ts'
++import { setActiveDeviceFlags, effectiveFeatures, isCloudDisabled } from '../src/core/featureFlags.ts'
++
++const payload: LicensePayload = {
++  v: 1, deviceId: 'DEV-1', customer: 'محل', plan: 'pro',
++  features: ['einvoice_sa', 'cloud_sync', 'telegram_bot'],
++  issuedAt: '2026-10-01', expiresAt: null,
++}
++const base = { activatedPayload: payload, trialStartedAt: '2026-10-01', lastSeenAt: '2026-10-09', today: '2026-10-10T08:00:00Z' }
++
++afterEach(() => setActiveDeviceFlags(null))
++
++describe('الإطفاء السحابي للميزات', () => {
++  it('بلا أعلام: الميزات الممنوحة تعمل كما هي', () => {
++    const state = evaluateLicense(base)
++    expect(hasFeature(state, 'einvoice_sa')).toBe(true)
++    expect(hasFeature(state, 'telegram_bot')).toBe(true)
++  })
++
++  it('ميزة مُطفأة سحابياً ⇒ hasFeature = false، والبقية تعمل', () => {
++    setActiveDeviceFlags({ disabledFeatures: ['einvoice_sa', 'telegram_bot'], noteAr: 'متأخر في السداد', updatedAt: '2026-10-10' })
++    const state = evaluateLicense(base)
++    expect(hasFeature(state, 'einvoice_sa')).toBe(false)
++    expect(hasFeature(state, 'telegram_bot')).toBe(false)
++    expect(hasFeature(state, 'cloud_sync')).toBe(true)
++  })
++
++  it('الإطفاء لا يُضيف ميزة غير ممنوحة ولا يغيّر المفتاح الأصلي', () => {
++    setActiveDeviceFlags({ disabledFeatures: ['multi_branch'], noteAr: '', updatedAt: '' })
++    const state = evaluateLicense(base)
++    expect(hasFeature(state, 'multi_branch')).toBe(false)
++    expect(payload.features).toEqual(['einvoice_sa', 'cloud_sync', 'telegram_bot'])
++  })
++
++  it('isCloudDisabled يميّز «مُطفأة مؤقتاً» عن «غير مشتراة»', () => {
++    const flags = { disabledFeatures: ['einvoice_sa' as const], noteAr: '', updatedAt: '' }
++    expect(isCloudDisabled('einvoice_sa', payload.features, flags)).toBe(true)
++    expect(isCloudDisabled('multi_branch', payload.features, flags)).toBe(false)
++    expect(effectiveFeatures(payload.features, flags)).not.toContain('einvoice_sa')
++  })
++
++  it('إلغاء الأعلام (null) يعيد الميزة فوراً', () => {
++    setActiveDeviceFlags({ disabledFeatures: ['cloud_sync'], noteAr: '', updatedAt: '' })
++    expect(hasFeature(evaluateLicense(base), 'cloud_sync')).toBe(false)
++    setActiveDeviceFlags(null)
++    expect(hasFeature(evaluateLicense(base), 'cloud_sync')).toBe(true)
++  })
++})
+diff --git a/tools/devbot/src/subscriptions.js b/tools/devbot/src/subscriptions.js
+index 632e769..87f78f0 100644
+--- a/tools/devbot/src/subscriptions.js
++++ b/tools/devbot/src/subscriptions.js
+@@ -68,6 +68,27 @@ export function deviceMetadata(record) {
+   }
+ }
+ 
++/** «آخر ظهور» يُكتب مرة كل 6 ساعات كحد أقصى — يحمي من كتابات KV المتكررة */
++export const LAST_SEEN_THROTTLE_MS = 6 * 60 * 60 * 1000
++
++/**
++ * يسجّل `lastSeenAt` على سجل الجهاز `dev:` عند طلبه حالته من العامل
++ * (كان الحقل يُعرض في اللوحة ولا يكتبه أحد). يفشل صامتاً: التتبع لا يُفسد الاستجابة.
++ * لا يكتب إن لم يكن للجهاز سجل (جهاز لم يُصدَر له مفتاح بعد).
++ */
++export async function touchDeviceLastSeen(cfg, deviceId, now = Date.now()) {
++  try {
++    const key = `dev:${deviceId}`
++    const raw = await cfg.kv.get(key)
++    if (!raw) return
++    const record = JSON.parse(raw)
++    const prev = Date.parse(record.lastSeenAt)
++    if (Number.isFinite(prev) && now - prev < LAST_SEEN_THROTTLE_MS) return
++    const next = { ...record, lastSeenAt: new Date(now).toISOString() }
++    await cfg.kv.put(key, JSON.stringify(next), { metadata: deviceMetadata(next) })
++  } catch { /* تتبع اختياري */ }
++}
++
+ /**
+  * مسح كل أجهزة المركز وتصنيفها: منتهية · قريبة (≤ soonDays) · مدى الحياة.
+  * `expiresAt` بصيغة YYYY-MM-DD كما يكتبها `expiresAfterDays` في licenseLib.
+diff --git a/tools/devbot/src/worker.js b/tools/devbot/src/worker.js
+index 1b62bdf..89c7a2e 100644
+--- a/tools/devbot/src/worker.js
++++ b/tools/devbot/src/worker.js
+@@ -25,7 +25,7 @@
+  */
+ import { issueLicenseKey, keyFingerprint, decodeLicenseKey, expiresAfterDays, canonicalPayload, issueActivityChangeKey } from './licenseLib.js'
+ import { acknowledgePanelCallback, getNotificationsForDevice, handlePanelButton, handlePanelText, panelHome, recordNoticeAck, noticeListReply } from './adminPanel.js'
+-import { subscriptionDigest, formatDigestAr, formatStatsAr, hasDigestNews, digestMarkerKey, readSoonDays, deviceMetadata } from './subscriptions.js'
++import { subscriptionDigest, formatDigestAr, formatStatsAr, hasDigestNews, digestMarkerKey, readSoonDays, deviceMetadata, touchDeviceLastSeen } from './subscriptions.js'
+ import { readAbout, setAboutField } from './aboutContent.js'
+ import {
+   REG_MAX_BYTES, sanitizeRegistration, saveRegistration, formatRegistrationAr,
+@@ -95,6 +95,7 @@ export default {
+     if (notifications) {
+       if (request.method !== 'GET') return new Response('method not allowed', { status: 405, headers: CORS })
+       const deviceId = decodeURIComponent(notifications[1])
++      await touchDeviceLastSeen(cfg, deviceId)
+       return json(await getNotificationsForDevice(cfg, deviceId), CORS)
+     }
+     /* بند 10 (تدقيق 2026-10-08): إيصال قراءة تنبيه المطوّر.
+@@ -116,7 +117,9 @@ export default {
+     // GET /subscription/:deviceId — عقد v1.0.3: حالة الاشتراك للعرض في التطبيق (بلا اسم العميل)
+     const sub = url.pathname.match(/^\/subscription\/([^/]+)$/)
+     if (sub) {
+-      const state = await cfg.kv.get(`dev:${decodeURIComponent(sub[1])}`)
++      const deviceId = decodeURIComponent(sub[1])
++      await touchDeviceLastSeen(cfg, deviceId)
++      const state = await cfg.kv.get(`dev:${deviceId}`)
+       if (!state) return json({ plan: '', expiresAt: null, message: '' }, CORS)
+       const o = JSON.parse(state)
+       return json({ plan: o.plan ?? '', expiresAt: o.expiresAt ?? null, message: o.message ?? '' }, CORS)
+@@ -415,8 +418,12 @@ async function handleUpdate(update, cfg) {
+         const key = await issueLicenseKey(payload, cfg.priv)
+         const fp = keyFingerprint(key)
+         await cfg.kv.put(`lic:${fp}`, JSON.stringify({ payload, key, issuedAt: payload.issuedAt, revoked: false }))
++        /* S4: الإصدار يحدّث السجل ولا يستبدله — يحفظ البريد وآخر ظهور وأي حقل آخر
++           (كان يُكتب من الصفر فيضيع البريد عند كل إعادة إصدار). */
++        const prevRaw = await cfg.kv.get(`dev:${deviceId}`)
++        const prevRecord = prevRaw ? JSON.parse(prevRaw) : {}
+         const deviceRecord = {
+-          plan, expiresAt: payload.expiresAt, customer: payload.customer, message: '', fingerprint: fp,
++          ...prevRecord, plan, expiresAt: payload.expiresAt, customer: payload.customer, message: '', fingerprint: fp,
+         }
+         await cfg.kv.put(`dev:${deviceId}`, JSON.stringify(deviceRecord), { metadata: deviceMetadata(deviceRecord) })
+         await appendDeviceLog(cfg, deviceId, `تفعيل ${plan} حتى ${payload.expiresAt ?? 'الحياة'} — ${payload.customer}${extraModules.length ? ` +وحدات ${extraModules.join(',')}` : ''}`)

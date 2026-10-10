@@ -3,6 +3,7 @@
  * signing) with the pure core. Every sensitive action appends to the local audit log.
  */
 
+import type { AboutDoc } from '../core/about.ts'
 import { bridge } from './bridge.ts'
 import {
   expiresAfterDays, keyFingerprint, canonicalPayload,
@@ -11,13 +12,14 @@ import {
 import { appendDeviceLogEntry, buildCustomerViews, mergeDevRecord, type CustomerView } from '../core/customers.ts'
 import {
   appendNotice, buildNotice, resolveTargetDevices, validateNoticeBody, collectSentNotices, editNoticeInList,
-  removeNoticeFromList, parseNoticeReads, NOTICE_KEY_PREFIX, NOTICE_READ_PREFIX,
+  removeNoticeFromList, parseNoticeAcks, NOTICE_KEY_PREFIX, NOTICE_ACK_PREFIX, normalizeNoticeLevel, type NoticeLevel,
   type NoticeTargeting, type NoticePatch, type SentNotice,
 } from '../core/notices.ts'
 import { finalModules, parseGlobalDefaults, type GlobalDefaults } from '../core/issueForm.ts'
 import { appendChatMessage, parseChat, validateReply } from '../core/support.ts'
 import { sanitizeDetails, type AuditAction } from '../core/audit.ts'
 import { describeTargeting } from '../core/notices.ts'
+import { chatMetadata, deviceMetadata } from '../core/kvMetadata.ts'
 import { mapLimit } from '../core/concurrency.ts'
 
 export interface IssueLicenseInput {
@@ -83,7 +85,7 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
     fingerprint,
     activityId: payload.activityId,
   })
-  const r2 = await bridge.cf.put('license', `dev:${input.deviceId}`, devRecord)
+  const r2 = await bridge.cf.put('license', `dev:${input.deviceId}`, devRecord, deviceMetadata(JSON.parse(devRecord)))
   if (!r2.ok) throw new Error(r2.error ?? 'تعذر الكتابة في Cloudflare')
 
   // device log — same shape the devbot appends
@@ -246,10 +248,10 @@ export async function revokeLicense(fingerprintOrKey: string): Promise<{ fingerp
 }
 
 /** Send a notification to the resolved targets. Returns the number of device lists written. */
-export async function sendNotice(input: { title?: string; body: string; expiresAt?: string | null; targeting: NoticeTargeting; customers: readonly CustomerView[] }): Promise<{ targets: number; mode: 'global' | 'devices'; failed: string[] }> {
+export async function sendNotice(input: { title?: string; body: string; expiresAt?: string | null; level?: NoticeLevel; targeting: NoticeTargeting; customers: readonly CustomerView[] }): Promise<{ targets: number; mode: 'global' | 'devices'; failed: string[] }> {
   const bodyError = validateNoticeBody(input.body)
   if (bodyError) throw new Error(bodyError)
-  const notice = buildNotice({ title: input.title, body: input.body, expiresAt: input.expiresAt ?? null })
+  const notice = buildNotice({ title: input.title, body: input.body, expiresAt: input.expiresAt ?? null, level: normalizeNoticeLevel(input.level) })
   const resolved = resolveTargetDevices(input.targeting, input.customers)
   if (resolved.mode === 'global') {
     const cur = await readForUpdate('license', 'notices:global')
@@ -277,6 +279,7 @@ export async function sendNotice(input: { title?: string; body: string; expiresA
   }
   await audit('notice_send', resolved.mode === 'global' ? 'all' : `${resolved.deviceIds.length} device`, {
     title: notice.title,
+    level: notice.level,
     targeting: describeTargeting(input.targeting, input.customers),
     expiresAt: notice.expiresAt,
     ...(failed.length ? { failed: failed.length } : {}),
@@ -294,7 +297,7 @@ export async function replySupport(deviceId: string, text: string): Promise<void
   if (err) throw new Error(err)
   const cur = await readForUpdate('services', `chat:${deviceId}`)
   const next = appendChatMessage(cur, 'developer', text)
-  const r = await bridge.cf.put('services', `chat:${deviceId}`, next)
+  const r = await bridge.cf.put('services', `chat:${deviceId}`, next, chatMetadata(JSON.parse(next) as unknown[]))
   if (!r.ok) throw new Error(r.error ?? 'تعذر الكتابة في Cloudflare')
   await audit('support_reply', deviceId, { length: text.length })
 }
@@ -306,22 +309,18 @@ export async function readSupportChat(deviceId: string) {
   return parseChat(cur.value)
 }
 
-/** Update the «حول» content — written to BOTH namespaces (both workers serve /about). */
-export async function updateAbout(content: { title: string; body: string; supportPhone: string; supportTelegram: string; website: string }): Promise<void> {
+/**
+ * Update the «حول» content — written to BOTH namespaces (both workers serve /about).
+ * ⚠️ يُستقبل المستند كاملاً (كما قرأته اللوحة) ويُكتب كاملاً: الحقول التي يكتبها البوت
+ * (واتساب/البريد/العنوان/ساعات العمل/الروابط/الحقول الإضافية) تبقى كما هي.
+ */
+export async function updateAbout(content: AboutDoc): Promise<void> {
   const value = JSON.stringify({ ...content, updatedAt: new Date().toISOString() })
   for (const ns of ['license', 'services'] as const) {
     const r = await bridge.cf.put(ns, 'about', value)
     if (!r.ok) throw new Error(r.error ?? 'تعذر الكتابة في Cloudflare')
   }
   await audit('about_update', undefined, { title: content.title })
-}
-
-/** Publish an app version (services namespace /version endpoint). */
-export async function updateVersion(info: { latestVersion: string; downloadUrl: string; sha256: string; mandatory: boolean; releaseNotesAr: string }): Promise<void> {
-  const value = JSON.stringify({ ...info, publishedAt: new Date().toISOString() })
-  const r = await bridge.cf.put('services', 'version', value)
-  if (!r.ok) throw new Error(r.error ?? 'تعذر الكتابة في Cloudflare')
-  await audit('version_update', info.latestVersion, { mandatory: info.mandatory })
 }
 
 /** Global defaults for new licenses (settings:global — same shape the devbot uses). */
@@ -485,7 +484,7 @@ export async function listSentNotices(): Promise<SentNoticesResult> {
     } while (cursor && all.length < 3000)
     return all
   }
-  const [noticeKeys, readKeys] = await Promise.all([listKeys(NOTICE_KEY_PREFIX), listKeys(NOTICE_READ_PREFIX).catch(() => [] as string[])])
+  const [noticeKeys, ackKeys] = await Promise.all([listKeys(NOTICE_KEY_PREFIX), listKeys(NOTICE_ACK_PREFIX).catch(() => [] as string[])])
   // قراءة على دفعات (8 طلبات متزامنة) — حتى لا نصطدم بحد طلبات Cloudflare API مع كثرة العملاء
   // قوائم الإشعارات: قراءة صارمة — قائمة ناقصة تعني أن الحذف/التعديل لاحقاً يتخطى ذلك الجهاز
   // فيبقى عنده النص القديم. إيصالات القراءة: أفضل جهد (الفشل = «لا إيصال» فقط).
@@ -495,9 +494,17 @@ export async function listSentNotices(): Promise<SentNoticesResult> {
     return [k, r.ok ? r.value : null] as const
   })
   const lists = await fetchAll(noticeKeys, true)
-  const reads = await fetchAll(readKeys, false)
+  // الإقرارات: notice-acks:<noticeId> = قائمة أجهزة ⇒ نقلبها إلى «جهاز ← إشعارات أقرّها»
+  const acks = await fetchAll(ackKeys, false)
   const readsByDevice = new Map<string, Record<string, string>>()
-  for (const [k, raw] of reads) readsByDevice.set(k.slice(NOTICE_READ_PREFIX.length), parseNoticeReads(raw))
+  for (const [k, raw] of acks) {
+    const noticeId = k.slice(NOTICE_ACK_PREFIX.length)
+    for (const deviceId of parseNoticeAcks(raw)) {
+      const reads = readsByDevice.get(deviceId) ?? {}
+      reads[noticeId] = ''
+      readsByDevice.set(deviceId, reads)
+    }
+  }
   return { notices: collectSentNotices(lists), readsByDevice }
 }
 

@@ -9,24 +9,55 @@
 import type { CustomerView } from './customers.ts'
 import { activityLabel } from './activities.ts'
 
+/**
+ * درجة الإلزام — مطابقة لـ NOTICE_LEVELS في تطبيق shopsys (tools/devbot/src/adminPanel.js):
+ * info ⇒ جرس وتوست · important ⇒ نافذة قابلة للتأجيل · critical ⇒ نافذة بإقرار إلزامي.
+ */
+export type NoticeLevel = 'info' | 'important' | 'critical'
+export const NOTICE_LEVELS: readonly NoticeLevel[] = ['info', 'important', 'critical']
+export const NOTICE_LEVEL_LABELS_AR: Record<NoticeLevel, string> = {
+  info: 'إعلان (بلا مقاطعة)',
+  important: 'مهم (نافذة منبثقة)',
+  critical: 'عاجل (إقرار إلزامي)',
+}
+const NOTICE_TITLES_AR: Record<NoticeLevel, string> = {
+  info: 'رسالة من المطوّر',
+  important: 'تنبيه مهم من المطوّر',
+  critical: 'تنبيه عاجل من المطوّر',
+}
+
+export function normalizeNoticeLevel(value: unknown): NoticeLevel {
+  return NOTICE_LEVELS.includes(value as NoticeLevel) ? (value as NoticeLevel) : 'info'
+}
+
 export interface CloudNotice {
   id: string
   title: string
   body: string
+  /** درجة الإلزام — غيابها = info (كل ما أُرسل قبل هذا الحقل) */
+  level?: NoticeLevel
+  /** إلزامي الإقرار — يساوي (level !== info) كما يكتبه البوت */
+  requiresAck?: boolean
   createdAt: string
   expiresAt: string | null
 }
 
 export const NOTICE_DEFAULT_TTL_DAYS = 90
-export const NOTICE_MAX_PER_LIST = 50
+/** سقف الإعلانات العادية (مطابق للبوت) */
+export const NOTICE_KEEP_INFO = 50
+/** سقف المهم/العاجل — لا يُسقطه تراكم الإعلانات (مطابق للبوت) */
+export const NOTICE_KEEP_URGENT = 100
 export const NOTICE_MAX_BODY = 1500
 
-export function buildNotice(input: { title?: string; body: string; expiresAt?: string | null }, now = new Date()): CloudNotice {
+export function buildNotice(input: { title?: string; body: string; expiresAt?: string | null; level?: NoticeLevel | string }, now = new Date()): CloudNotice {
   const expiresAt = input.expiresAt ?? new Date(now.getTime() + NOTICE_DEFAULT_TTL_DAYS * 86400000).toISOString()
+  const level = normalizeNoticeLevel(input.level)
   return {
     id: crypto.randomUUID(),
-    title: (input.title ?? '').trim() || 'رسالة من المطوّر',
+    title: (input.title ?? '').trim() || NOTICE_TITLES_AR[level],
     body: input.body,
+    level,
+    requiresAck: level !== 'info',
     createdAt: now.toISOString(),
     expiresAt,
   }
@@ -43,15 +74,27 @@ export function parseNoticeList(raw: string | null): CloudNotice[] {
   }
 }
 
+const isUrgentNotice = (n: CloudNotice): boolean => n.level === 'important' || n.level === 'critical'
+
+/**
+ * تقليم القائمة لكل درجة على حدة — مطابق لـ capNotices في البوت.
+ * كان slice(-50) على القائمة كلها يُسقط تنبيهاً عاجلاً بعد 50 إعلاناً أحدث منه.
+ */
+export function capNotices(list: readonly CloudNotice[]): CloudNotice[] {
+  const urgent = list.filter(isUrgentNotice).slice(-NOTICE_KEEP_URGENT)
+  const info = list.filter((n) => !isUrgentNotice(n)).slice(-NOTICE_KEEP_INFO)
+  return [...urgent, ...info].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+}
+
 /**
  * Append a notice to a KV list — mirrors the devbot's appendNotice:
- * drop expired, push, keep the last 50.
+ * drop expired, push, cap per level.
  */
 export function appendNotice(raw: string | null, notice: CloudNotice, now = new Date()): string {
   // بلا تاريخ انتهاء = دائم (يبقى)؛ المنتهي أو ذو التاريخ التالف يُنظَّف
   const previous = parseNoticeList(raw).filter((n) => n != null && (n.expiresAt == null || Date.parse(n.expiresAt) > now.getTime()))
   previous.push(notice)
-  return JSON.stringify(previous.slice(-NOTICE_MAX_PER_LIST))
+  return JSON.stringify(capNotices(previous))
 }
 
 export type NoticeTargeting =
@@ -109,11 +152,11 @@ export function describeTargeting(targeting: NoticeTargeting, customers: readonl
 export const NOTICE_KEY_PREFIX = 'notices:'
 export const NOTICE_GLOBAL_KEY = 'notices:global'
 /**
- * إيصالات القراءة — يكتبها الـ worker عندما يبلّغ التطبيق أن العميل فتح الإشعار:
- *   noticeread:<deviceId> → { "<noticeId>": "<ISO وقت القراءة>", ... }
- * (العقد موثّق في docs/تتبع-قراءة-الإشعارات.md)
+ * إقرارات القراءة — يكتبها البوت (SHOPSYS_CONTROL) حين يضغط العميل «تمّت القراءة»:
+ *   notice-acks:<noticeId> → ["SHOP-…", "SHOP-…"]   (قائمة أجهزة، سقف 1000)
+ * (المصدر: tools/devbot/src/adminPanel.js — recordNoticeAck)
  */
-export const NOTICE_READ_PREFIX = 'noticeread:'
+export const NOTICE_ACK_PREFIX = 'notice-acks:'
 
 export interface SentNotice {
   notice: CloudNotice & { editedAt?: string }
@@ -190,7 +233,18 @@ export function removeNoticeFromList(raw: string | null, id: string): { raw: str
   return { raw: JSON.stringify(next), changed: next.length !== list.length }
 }
 
-/** noticeread:<deviceId> → خريطة معرّف الإشعار ← وقت القراءة (يقبل أيضاً مصفوفة معرّفات أو [{id, at}]). */
+/** notice-acks:<noticeId> → قائمة معرّفات الأجهزة التي أقرّت الإشعار (تجاهل ما ليس نصاً). */
+export function parseNoticeAcks(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw) as unknown
+    return Array.isArray(arr) ? arr.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** noticeread:<deviceId> — صيغة قديمة لم يعد أحد يكتبها؛ تبقى للتوافق مع البيانات القديمة فقط. */
 export function parseNoticeReads(raw: string | null): Record<string, string> {
   if (!raw) return {}
   try {
@@ -234,7 +288,7 @@ export const READ_STATE_LABELS_AR: Record<NoticeReadState, string> = {
 
 /**
  * حالة كل مستلم:
- *  • قرأه   — يوجد إيصال قراءة في noticeread:<deviceId>
+ *  • قرأه   — أقرّ الجهاز الإشعار (notice-acks:<id>)
  *  • وصله   — اتصل تطبيقه بالسحابة بعد إرسال الإشعار (lastSeenAt) ولا إيصال قراءة
  *  • لم يصله — لم يتصل منذ الإرسال
  */

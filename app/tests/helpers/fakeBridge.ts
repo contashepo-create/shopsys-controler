@@ -14,6 +14,8 @@ type Ns = 'license' | 'services'
 export interface FakeBridge {
   bridge: ControlerBridge
   kv: Record<Ns, Map<string, string>>
+  /** metadata آخر كتابة لكل مفتاح (undefined إن كتبت بلا metadata) — كما تفعل Cloudflare */
+  meta: Record<Ns, Map<string, Record<string, unknown>>>
   audit: AuditEntry[]
   signer: TestSigner
   stats: { gets: number; puts: number; lists: number; maxInFlight: number }
@@ -38,6 +40,7 @@ export function createFakeBridge(): FakeBridge {
   const f: FakeBridge = {
     bridge: null as unknown as ControlerBridge,
     kv: { license: new Map(), services: new Map() },
+    meta: { license: new Map(), services: new Map() },
     audit: [],
     signer: createDesktopSigner(),
     stats: { gets: 0, puts: 0, lists: 0, maxInFlight: 0 },
@@ -100,11 +103,14 @@ export function createFakeBridge(): FakeBridge {
         if (f.failGet.has(`${ns}:${key}`)) return { ok: false, value: null, error: 'تجاوزت حد طلبات Cloudflare — حاول بعد لحظات', code: 'cf_error' as CfErrorCode }
         return { ok: true, value: f.kv[ns].get(key) ?? null }
       }),
-      put: (ns, key, value) => track(() => {
+      put: (ns, key, value, metadata) => track(() => {
         f.stats.puts++
         const m = missing(ns); if (m) return m
         if (f.failPut.has(`${ns}:${key}`)) return { ok: false, error: `فشل كتابة ${key}`, code: 'cf_error' as CfErrorCode }
         f.kv[ns].set(key, value)
+        // كتابة Cloudflare تستبدل الإدخال كاملاً: بلا metadata يُمسح الفهرس القديم
+        if (metadata) f.meta[ns].set(key, metadata)
+        else f.meta[ns].delete(key)
         return { ok: true }
       }),
       delete: (ns, key) => track(() => { f.kv[ns].delete(key); return { ok: true } }),

@@ -15,58 +15,82 @@ export interface ActivityDef {
   label: string
 }
 
+/**
+ * مزامنة مع تطبيق shopsys — ACTIVITY_TEMPLATES في app/src/core/activities.ts (المرجع b47043c).
+ * ⚠️ معرّف النشاط يُوقَّع داخل المفتاح، والتطبيق يرفض المفتاح لنشاط مختلف. الأقسام هنا
+ * هي «الافتراضية» التي يمنحها التطبيق للنشاط دون مفتاح، ولا تُرسَل في المفتاح.
+ * أي قسم خارجها يُمنح بمفتاح (extraModules) — وهو ما تُصدره اللوحة.
+ */
 export const ACTIVITY_CATALOG: readonly ActivityDef[] = [
-  { id: 'grocery', label: 'بقالة / سوبر ماركت' },
-  { id: 'pharmacy', label: 'صيدلية' },
-  { id: 'restaurant', label: 'مطعم / كافيه' },
+  { id: 'grocery', label: 'أغذية / سوبر ماركت' },
+  { id: 'feed_trade', label: 'تجارة الأعلاف والحبوب' },
+  { id: 'mobile', label: 'موبايلات وصيانة' },
   { id: 'clothing', label: 'ملابس وأحذية' },
-  { id: 'electronics', label: 'إلكترونيات وموبايلات' },
+  { id: 'pharmacy', label: 'صيدلية' },
+  { id: 'electronics', label: 'أجهزة كهربائية' },
+  { id: 'spare_parts', label: 'قطع غيار' },
+  { id: 'equipment_rental', label: 'إيجار معدات ثقيلة' },
+  { id: 'logistics', label: 'خدمات لوجستية ونقل' },
+  { id: 'lab', label: 'معمل تحاليل طبية' },
+  { id: 'contracting', label: 'مقاولات وإنشاءات' },
+  { id: 'clinic', label: 'عيادة طبية' },
+  { id: 'cars', label: 'معرض سيارات (بيع وإيجار)' },
+  { id: 'restaurant', label: 'مطعم / كافيه' },
   { id: 'jewelry', label: 'ذهب ومجوهرات' },
-  { id: 'maintenance', label: 'مركز صيانة' },
-  { id: 'laundry', label: 'مغسلة' },
-  { id: 'clinic', label: 'عيادة' },
-  { id: 'lab', label: 'معمل / مختبر' },
-  { id: 'cars', label: 'سيارات وقطع غيار' },
-  { id: 'realestate', label: 'عقارات' },
-  { id: 'contracting', label: 'مقاولات' },
-  { id: 'logistics', label: 'شحن ولوجستيات' },
-  { id: 'equipment_rental', label: 'تأجير معدات' },
-  { id: 'booking', label: 'حجوزات (قاعات / ملاعب)' },
-  { id: 'wallet_services', label: 'خدمات مالية ومحافظ' },
-  { id: 'factory', label: 'مصنع / تصنيع' },
-  { id: 'wholesale', label: 'تجارة جملة' },
-  { id: 'building_materials', label: 'مواد بناء' },
-  { id: 'general', label: 'نشاط تجاري عام' },
+  { id: 'laundry', label: 'مغسلة ملابس' },
+  { id: 'butcher', label: 'جزارة ولحوم' },
+  { id: 'dates', label: 'تمور وتعبئة' },
+  { id: 'salon', label: 'صالون حلاقة وتجميل' },
+  { id: 'bakery', label: 'مخبز وحلويات' },
+  { id: 'realestate', label: 'عقارات وإدارة أملاك' },
+  { id: 'trading', label: 'تجارة وتوزيع (جملة وقطاعي)' },
+  { id: 'manufacturing', label: 'مصنع / ورشة إنتاج' },
+  { id: 'services', label: 'شركة خدمات' },
+  { id: 'stationery', label: 'مكتبة وخدمة طالب' },
+  { id: 'herbalist', label: 'عطارة وبهارات' },
+  { id: 'building_materials', label: 'مواد بناء وحدايد وبويات' },
+  { id: 'household', label: 'منظفات وأدوات منزلية' },
+  { id: 'general', label: 'نشاط عام / آخر' },
 ]
 
+
 /**
- * الأقسام المضمّنة أصلاً في كل نشاط — لا تُعرض في «إضافة قسم» حتى لا يُرسَل للعميل قسم عنده.
- * ⚠️ يجب أن تطابق تعريف الأنشطة في تطبيق تَحَكَّم (عقد «إضافة قسم خارج النشاط»).
- * لو احتجت قسماً مخفياً هنا: زر «إظهار كل الأقسام» في نموذج الإصدار.
+ * الأقسام الافتراضية لكل نشاط كما يعرفها التطبيق (مطابقة لـ ACTIVITY_TEMPLATES).
+ * لا تُعرض في «إضافة قسم» لأن العميل يحصل عليها من نشاطه أصلاً.
+ * «إظهار كل الأقسام» في نموذج الإصدار يتجاوز هذا الجدول عند الحاجة.
  */
 export const ACTIVITY_MODULES: Readonly<Record<string, readonly string[]>> = {
-  grocery: ['pos', 'inventory', 'purchases'],
+  grocery: ['pos', 'inventory', 'purchases', 'recipes'],
+  feed_trade: ['pos', 'inventory', 'purchases', 'recipes'],
+  mobile: ['pos', 'inventory', 'purchases', 'maintenance', 'installments', 'wallet_services'],
+  clothing: ['pos', 'inventory', 'purchases', 'installments'],
   pharmacy: ['pos', 'inventory', 'purchases'],
-  restaurant: ['pos', 'inventory', 'purchases', 'recipes'],
-  clothing: ['pos', 'inventory', 'purchases'],
-  electronics: ['pos', 'inventory', 'purchases'],
-  jewelry: ['pos', 'inventory', 'purchases', 'jewelry'],
-  maintenance: ['pos', 'inventory', 'maintenance'],
-  laundry: ['pos', 'laundry'],
-  clinic: ['clinic', 'booking'],
-  lab: ['lab', 'booking'],
-  cars: ['pos', 'inventory', 'purchases', 'cars'],
-  realestate: ['realestate', 'installments'],
-  contracting: ['contracting', 'purchases', 'inventory'],
+  electronics: ['pos', 'inventory', 'purchases', 'maintenance', 'installments'],
+  spare_parts: ['pos', 'inventory', 'purchases'],
+  equipment_rental: ['equipment_rental', 'installments'],
   logistics: ['logistics'],
-  equipment_rental: ['equipment_rental', 'inventory'],
-  booking: ['booking', 'pos'],
-  wallet_services: ['wallet_services', 'pos'],
-  factory: ['processing', 'inventory', 'purchases'],
-  wholesale: ['pos', 'inventory', 'purchases'],
-  building_materials: ['pos', 'inventory', 'purchases'],
-  general: ['pos', 'inventory', 'purchases'],
+  lab: ['lab', 'booking'],
+  contracting: ['contracting', 'inventory', 'purchases'],
+  clinic: ['clinic'],
+  cars: ['cars', 'equipment_rental', 'installments'],
+  restaurant: ['pos', 'inventory', 'purchases', 'recipes'],
+  jewelry: ['pos', 'inventory', 'purchases', 'jewelry'],
+  laundry: ['laundry', 'booking'],
+  butcher: ['pos', 'inventory', 'purchases', 'processing'],
+  dates: ['pos', 'inventory', 'purchases', 'processing'],
+  salon: ['pos', 'inventory', 'purchases', 'booking'],
+  bakery: ['pos', 'inventory', 'purchases', 'recipes'],
+  realestate: ['realestate'],
+  trading: ['pos', 'inventory', 'purchases', 'installments'],
+  manufacturing: ['inventory', 'purchases', 'recipes', 'pos'],
+  services: ['pos', 'inventory', 'purchases'],
+  stationery: ['pos', 'inventory', 'purchases'],
+  herbalist: ['pos', 'inventory', 'purchases', 'recipes'],
+  building_materials: ['pos', 'inventory', 'purchases', 'installments'],
+  household: ['pos', 'inventory', 'purchases'],
+  general: ['pos', 'inventory', 'purchases', 'installments'],
 }
+
 
 /** أقسام النشاط المضمّنة (فارغة لنشاط مجهول أو «أي نشاط»). */
 export function modulesIncludedInActivity(activityId: string | null | undefined): readonly string[] {

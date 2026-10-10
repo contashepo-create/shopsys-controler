@@ -84,6 +84,21 @@ describe('issueLicense — الإصدار وما يُكتب في KV', () => {
     expect(h.fake.json<{ activityId: string }>('license', `dev:${DEV}`)!.activityId).toBe('carParts')
   })
 
+  it('dev: يُكتب مع فهرس metadata بالشكل الذي يقرؤه البوت (التذكير اليومي لا ينهار)', async () => {
+    await actions.issueLicense(baseInput({ customer: 'بقالة النور', plan: 'pro', days: 30 }))
+    const meta = h.fake.meta.license.get(`dev:${DEV}`)
+    expect(meta).toMatchObject({ v: 1, customer: 'بقالة النور', plan: 'pro' })
+    expect(meta?.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('الرد على الدعم يكتب فهرس chat: كما يكتبه cloud worker (count/lastFrom/lastText)', async () => {
+    h.fake.seed('services', `chat:${DEV}`, [{ id: 1, from: 'client', text: 'سؤال من العميل', at: '2026-10-09T10:00:00Z' }])
+    await actions.replySupport(DEV, 'رد من المطوّر')
+    expect(h.fake.meta.services.get(`chat:${DEV}`)).toEqual({
+      v: 1, count: 2, lastFrom: 'developer', lastAt: expect.any(String), lastText: 'رد من المطوّر',
+    })
+  })
+
   it('يدمج سجل dev: ولا يستبدله: يحفظ ما كتبه التطبيق ويزيل disabledAt', async () => {
     h.fake.seed('license', `dev:${DEV}`, { lastSeenAt: '2026-10-01T10:00:00Z', email: 'a@b.c', appVersion: '3.2', disabledAt: '2026-09-01', message: 'موقوف', activityId: 'pharmacy' })
     await actions.issueLicense(baseInput())
@@ -294,13 +309,15 @@ describe('الإشعارات: إرسال / سجل / تعديل / حذف / إيص
     await new Promise((r) => setTimeout(r, 5))
     await actions.sendNotice({ body: 'الثاني', targeting: { type: 'all' }, customers: customers() })
     const firstId = h.fake.json<{ id: string }[]>('license', `notices:${DEV}`)![0].id
-    h.fake.seed('license', `noticeread:${DEV2}`, { [firstId]: '2026-10-09T12:00:00Z' })
+    // إقرار البوت: notice-acks:<id> = قائمة أجهزة أقرّت الإشعار
+    h.fake.seed('license', `notice-acks:${firstId}`, [DEV2])
 
     const { notices, readsByDevice } = await actions.listSentNotices()
     expect(notices.map((n) => n.notice.body)).toEqual(['الثاني', 'الأول'])
     expect(notices[1]).toMatchObject({ scope: 'devices', deviceIds: [DEV, DEV2] })
     expect(notices[1].listKeys.sort()).toEqual([`notices:${DEV}`, `notices:${DEV2}`])
-    expect(readsByDevice.get(DEV2)).toEqual({ [firstId]: '2026-10-09T12:00:00Z' })
+    expect(readsByDevice.get(DEV2)).toEqual({ [firstId]: '' })
+    expect(readsByDevice.get(DEV)).toBeUndefined()
   })
 
   it('سجل المرسل مع آلاف المفاتيح: يتبع صفحات cursor ولا يتجاوز 8 طلبات متزامنة', async () => {

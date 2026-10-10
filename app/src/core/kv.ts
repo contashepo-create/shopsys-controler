@@ -34,7 +34,7 @@ export class KvError extends Error {
 export interface KvClient {
   listKeys(ns: KvNamespace, prefix?: string, cursor?: string): Promise<KvListResult>
   get(ns: KvNamespace, key: string): Promise<string | null>
-  put(ns: KvNamespace, key: string, value: string): Promise<void>
+  put(ns: KvNamespace, key: string, value: string, metadata?: Record<string, unknown>): Promise<void>
   delete(ns: KvNamespace, key: string): Promise<void>
 }
 
@@ -85,6 +85,14 @@ async function parseEnvelope(res: Response): Promise<Envelope> {
   }
 }
 
+/** جسم multipart لكتابة القيمة مع metadata (واجهة Cloudflare KV). */
+export function kvMultipartBody(value: string, metadata: Record<string, unknown>): FormData {
+  const form = new FormData()
+  form.append('value', value)
+  form.append('metadata', JSON.stringify(metadata))
+  return form
+}
+
 /** Create a KV client. fetchImpl is injectable for tests. */
 export function createKvClient(cfg: KvNamespaceConfig, fetchImpl: typeof fetch = fetch): KvClient {
   const headers = () => ({
@@ -116,12 +124,12 @@ export function createKvClient(cfg: KvNamespaceConfig, fetchImpl: typeof fetch =
       return res.text()
     },
 
-    async put(ns, key, value) {
-      const res = await fetchImpl(namespaceUrl(cfg, ns, key), {
-        method: 'PUT',
-        headers: { ...headers(), 'content-type': 'text/plain; charset=utf-8' },
-        body: value,
-      })
+    async put(ns, key, value, metadata) {
+      // مع metadata: multipart (حقلا value وmetadata) — وإلا تُسقط الكتابة الفهرس الموجود
+      const init: RequestInit = metadata
+        ? { method: 'PUT', headers: { authorization: `Bearer ${cfg.apiToken}` }, body: kvMultipartBody(value, metadata) }
+        : { method: 'PUT', headers: { ...headers(), 'content-type': 'text/plain; charset=utf-8' }, body: value }
+      const res = await fetchImpl(namespaceUrl(cfg, ns, key), init)
       const env = await parseEnvelope(res)
       if (!res.ok || !env.success) throw new KvError(messageFor(res.status, env.errors?.[0]?.message), res.status)
     },

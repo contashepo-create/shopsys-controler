@@ -143,7 +143,7 @@ import { describeTargeting } from '../src/core/notices.ts'
 
 describe('describeTargeting — اسم النشاط بدل المعرّف', () => {
   it('يعرض الاسم العربي للنشاط المعروف والمعرّف كما هو لغير المعروف', () => {
-    expect(describeTargeting({ type: 'activity', activityId: 'grocery' }, [])).toContain('بقالة')
+    expect(describeTargeting({ type: 'activity', activityId: 'grocery' }, [])).toContain('أغذية / سوبر ماركت')
     expect(describeTargeting({ type: 'activity', activityId: 'customX' }, [])).toContain('customX')
   })
 })

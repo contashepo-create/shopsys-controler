@@ -14,7 +14,7 @@ const m = vi.hoisted(() => ({
   issueLicense: vi.fn(), lookupDevice: vi.fn(), readGlobalDefaults: vi.fn(), sendKeyToCustomer: vi.fn(),
   listSentNotices: vi.fn(), editNotice: vi.fn(), deleteNotice: vi.fn(), sendNotice: vi.fn(),
   readCloudFlags: vi.fn(), setCloudFlag: vi.fn(), revokeLicense: vi.fn(), updateGlobalSettings: vi.fn(),
-  updateAbout: vi.fn(), updateVersion: vi.fn(),
+  updateAbout: vi.fn(),
 }))
 const ca = vi.hoisted(() => ({ deactivateCustomer: vi.fn() }))
 const b = vi.hoisted(() => ({ get: vi.fn() }))
@@ -137,28 +137,41 @@ describe('بحث / حرق', () => {
   })
 })
 
-describe('«حول» والتحديثات', () => {
+describe('«حول»', () => {
   it('فشل قراءة «حول» → الحفظ معطّل مع تنبيه (لا يُكتب نموذج فارغ فوق المحتوى عند كل العملاء)', async () => {
     const user = userEvent.setup()
-    b.get.mockImplementation(async (_ns: string, key: string) => (key === 'about' ? { ok: false, value: null, error: '429' } : { ok: true, value: JSON.stringify({ latestVersion: '1.0.0' }) }))
+    b.get.mockImplementation(async () => ({ ok: false, value: null, error: '429' }))
     renderPage(<ContentPage />)
     expect(await screen.findByText(/تعذر قراءة محتوى «حول» الحالي/)).toBeTruthy()
     expect((screen.getByRole('button', { name: 'حفظ في الاسمين' }) as HTMLButtonElement).disabled).toBe(true)
-    // قسم التحديث قُرئ بنجاح → يعمل
-    await user.type(screen.getAllByRole('textbox')[5], '1.0.1')
-    expect((screen.getByRole('button', { name: 'نشر التحديث' }) as HTMLButtonElement).disabled).toBe(false)
     // إعادة المحاولة تنجح
     b.get.mockImplementation(async () => ({ ok: true, value: JSON.stringify({ title: 'تحكم', body: 'نص' }) }))
     await user.click(screen.getByRole('button', { name: 'إعادة المحاولة' }))
     await waitFor(() => expect((screen.getByRole('button', { name: 'حفظ في الاسمين' }) as HTMLButtonElement).disabled).toBe(false))
     expect(m.updateAbout).not.toHaveBeenCalled()
   })
-  it('فشل قراءة إعلان التحديث → النشر معطّل', async () => {
-    b.get.mockImplementation(async (_ns: string, key: string) => (key === 'version' ? { ok: false, value: null, error: '500' } : { ok: true, value: null }))
+  it('الحفظ يرسل المستند كاملاً: حقول البوت (واتساب، روابط، حقول إضافية) لا تُمسح', async () => {
+    const user = userEvent.setup()
+    const stored = {
+      title: 'تحكم', body: 'نص', supportPhone: '+201000000000', supportTelegram: 'old_tg', website: 'https://x.example',
+      supportWhatsapp: '201000000000', supportEmail: 'a@b.co', address: 'المنصورة', workHours: '9-5',
+      socialLinks: [{ label: 'فيسبوك', url: 'https://facebook.com/x' }], extraFields: [{ label: 'سجل', value: '123' }],
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    b.get.mockImplementation(async () => ({ ok: true, value: JSON.stringify(stored) }))
+    m.updateAbout.mockResolvedValue(undefined)
     renderPage(<ContentPage />)
-    expect(await screen.findByText(/تعذر قراءة إعلان التحديث الحالي/)).toBeTruthy()
-    expect((screen.getByRole('button', { name: 'نشر التحديث' }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: 'حفظ في الاسمين' }) as HTMLButtonElement).disabled).toBe(false)
+    await screen.findByDisplayValue('تحكم')
+    const tg = screen.getByDisplayValue('old_tg')
+    await user.clear(tg)
+    await user.type(tg, 'new_tg')
+    await user.click(screen.getByRole('button', { name: 'حفظ في الاسمين' }))
+    await waitFor(() => expect(m.updateAbout).toHaveBeenCalledTimes(1))
+    const sent = m.updateAbout.mock.calls[0][0]
+    expect(sent).toMatchObject({
+      supportWhatsapp: '201000000000', supportEmail: 'a@b.co', address: 'المنصورة', workHours: '9-5',
+      socialLinks: stored.socialLinks, extraFields: stored.extraFields, supportTelegram: 'new_tg', title: 'تحكم',
+    })
   })
 })
 
