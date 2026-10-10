@@ -33,6 +33,8 @@ export function deviceMetadata(record: unknown): DeviceMetadata {
 function cleanText(v: unknown, max: number): string {
   if (typeof v !== 'string') return ''
   return v
+    // محارف التحكم مقصودة هنا: نزعها هو الهدف
+    // oxlint-disable-next-line no-control-regex
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
     .replace(/[<>]/g, '')
     .replace(/[\u200B\u2060\uFEFF]/g, '')

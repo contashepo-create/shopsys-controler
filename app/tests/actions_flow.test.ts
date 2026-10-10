@@ -75,6 +75,24 @@ describe('issueLicense — الإصدار وما يُكتب في KV', () => {
     expect(payload.extraModules).toEqual(['cars', 'pos'])
   })
 
+  it('بطاقة sub: دمج لا استبدال: تحفظ ملاحظة العميل وأي حقل آخر، وتزيل key/fingerprint القديمين', async () => {
+    h.fake.seed('services', `sub:${DEV}`, { plan: 'basic', expiresAt: null, message: 'العميل يطلب ترقية', extra: 1, key: 'OLDKEY', fingerprint: 'deadbeef' })
+    await actions.issueLicense(baseInput({ plan: 'pro', days: 30 }))
+    const sub = h.fake.json<Record<string, unknown>>('services', `sub:${DEV}`)!
+    expect(sub).toMatchObject({ plan: 'pro', message: 'العميل يطلب ترقية', extra: 1 })
+    expect(sub).not.toHaveProperty('key')
+    expect(sub).not.toHaveProperty('fingerprint')
+  })
+
+  it('تعذر قراءة sub: ⇒ لا يُكتب فوقها (ملاحظة العميل تبقى)، والإصدار ينجح مع ملاحظة', async () => {
+    h.fake.seed('services', `sub:${DEV}`, { plan: 'basic', message: 'ملاحظة مهمة' })
+    h.fake.failGet.add(`services:sub:${DEV}`)
+    const res = await actions.issueLicense(baseInput())
+    expect(res.notes?.join(' ')).toContain('بطاقة الاشتراك')
+    expect(h.fake.json('services', `sub:${DEV}`)).toMatchObject({ plan: 'basic', message: 'ملاحظة مهمة' })
+    expect(h.fake.json('license', `lic:${res.fingerprint}`)).toMatchObject({ revoked: false })
+  })
+
   it('مدى الحياة: expiresAt = null في المفتاح وdev: وsub:', async () => {
     const res = await actions.issueLicense(baseInput({ plan: 'lifetime', days: 999 }))
     expect(res.payload.expiresAt).toBeNull()

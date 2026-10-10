@@ -58,3 +58,8 @@ export function desktopCfFetch(): { cfFetch: CfFetch; retries: number; baseMs: n
   const src = `${extractConst('CF_RETRIES')}\n${extractConst('CF_RETRY_BASE_MS')}\n${extractFunction('cfRetryDelay')}\nasync ${extractFunction('cfFetch')}\nreturn { cfFetch, retries: CF_RETRIES, baseMs: CF_RETRY_BASE_MS }`
   return new Function(src)() as { cfFetch: CfFetch; retries: number; baseMs: number }
 }
+
+/** cfPutInit من main.cjs — جسم طلب كتابة KV (multipart مع metadata، أو نص عادي). */
+export function desktopCfPutInit(): (value: string, metadata: unknown, headers: Record<string, string>) => { method: string; headers: Record<string, string>; body: FormData | string } {
+  return new Function(`${extractFunction('cfPutInit')}\nreturn cfPutInit`)() as (value: string, metadata: unknown, headers: Record<string, string>) => { method: string; headers: Record<string, string>; body: FormData | string }
+}

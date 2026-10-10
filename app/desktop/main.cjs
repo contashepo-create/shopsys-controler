@@ -225,6 +225,20 @@ async function cfFetch(url, init, opts) {
   }
 }
 
+/**
+ * جسم طلب كتابة KV. metadata (فهرس البوت لـ dev:/chat:) لا تُكتب إلا بـmultipart —
+ * الكتابة النصية تُسقطها. دالة نقية (بلا إدخال/إخراج) لتُختبر مباشرةً.
+ */
+function cfPutInit(value, metadata, headers) {
+  if (metadata && typeof metadata === 'object') {
+    const form = new FormData()
+    form.append('value', String(value ?? ''))
+    form.append('metadata', JSON.stringify(metadata))
+    return { method: 'PUT', headers: { authorization: headers.authorization }, body: form }
+  }
+  return { method: 'PUT', headers: { ...headers, 'content-type': 'text/plain; charset=utf-8' }, body: String(value ?? '') }
+}
+
 async function handleCfRequest(payload) {
   const { ns, op } = payload || {}
   const cfg = cfConfig()
@@ -267,18 +281,7 @@ async function handleCfRequest(payload) {
     }
 
     if (op === 'put') {
-      // metadata (فهرس البوت لـ dev:/chat:) لا تُكتب إلا بـmultipart — الكتابة النصية تُسقطها
-      const withMeta = payload.metadata && typeof payload.metadata === 'object'
-      let init
-      if (withMeta) {
-        const form = new FormData()
-        form.append('value', String(payload.value ?? ''))
-        form.append('metadata', JSON.stringify(payload.metadata))
-        init = { method: 'PUT', headers: { authorization: headers.authorization }, body: form }
-      } else {
-        init = { method: 'PUT', headers: { ...headers, 'content-type': 'text/plain; charset=utf-8' }, body: String(payload.value ?? '') }
-      }
-      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, init)
+      const res = await cfFetch(`${base}/values/${encodeURIComponent(payload.key)}`, cfPutInit(payload.value, payload.metadata, headers))
       const text = await res.text()
       if (!res.ok) return cfFail(res.status, text)
       try {
@@ -813,7 +816,7 @@ const HANDLERS = {
   },
   'shell:openExternal': (url) => {
     const u = String(url)
-    if (/^https:\/\//.test(u)) void shell.openExternal(u)
+    if (u.startsWith('https://')) void shell.openExternal(u)
     return { ok: true }
   },
 }
@@ -859,7 +862,7 @@ function createWindow() {
   win.webContents.on('did-navigate', () => { auth.lock() })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//.test(url)) void shell.openExternal(url)
+    if (url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
 

@@ -1,7 +1,7 @@
 /**
  * metadata مفاتيح KV: الشكل مطابق لما يقرؤه البوت، وكتابة KV مع metadata تُرسل multipart.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { deviceMetadata, chatMetadata, DEVICE_META_VERSION, CHAT_META_VERSION } from '../src/core/kvMetadata.ts'
 import { createKvClient, kvMultipartBody } from '../src/core/kv.ts'
 
@@ -47,7 +47,7 @@ describe('كتابة KV مع metadata', () => {
     const f = (async (_u: string, i?: RequestInit) => { init = i; return new Response(JSON.stringify({ success: true, result: null }), { status: 200 }) }) as unknown as typeof fetch
     await createKvClient(cfg, f).put('license', 'dev:X', '{"a":1}')
     expect(init?.body).toBe('{"a":1}')
-    expect((init?.headers as Record<string, string>)['content-type']).toBe('text/plain; charset=utf-8')
+    expect(((init?.headers ?? {}) as Record<string, string>)['content-type']).toBe('text/plain; charset=utf-8')
   })
 
   it('مع metadata: multipart فيه value و metadata، بلا content-type نصي (يضبطه المتصفح/المحرك مع الحدود)', async () => {
@@ -58,7 +58,7 @@ describe('كتابة KV مع metadata', () => {
     expect(body).toBeInstanceOf(FormData)
     expect(body.get('value')).toBe('{"a":1}')
     expect(JSON.parse(String(body.get('metadata')))).toEqual({ v: 1, customer: 'محل' })
-    expect((init?.headers as Record<string, string>)['content-type']).toBeUndefined()
+    expect(((init?.headers ?? {}) as Record<string, string>)['content-type']).toBeUndefined()
   })
 
   it('kvMultipartBody يبني الحقلين', () => {

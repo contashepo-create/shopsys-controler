@@ -95,13 +95,9 @@ export async function issueLicense(input: IssueLicenseInput, opts: { renew?: boo
   // بطاقة الاشتراك في مساحة الخدمات: نسخة ثانوية لتذكير/إحصائيات بوت الخدمات (cloud/worker.js).
   // المصدر الحقيقي للاستحقاق هو dev: (بوت المركز). لا تحمل المفتاح ولا بصمته: لا يقرأهما بوت الخدمات
   // ولا التطبيق (التطبيق لا يطبّق مفاتيح من السحابة)، والإبطال يزيل النسخ القديمة التي تحملهما.
-  // أفضل جهد: غياب مساحة الخدمات لا يجوز أن يُلغي مفتاحاً صدر فعلاً في مساحة التراخيص
-  const subMirror = await bridge.cf.put('services', `sub:${input.deviceId}`, JSON.stringify({
-    plan: payload.plan, expiresAt: payload.expiresAt, message: '', customer: payload.customer, issuedAt: payload.issuedAt,
-  }))
-  if (!subMirror.ok) {
-    notes.push(subMirror.code === 'ns_missing' ? 'لم تُحدَّث بطاقة الاشتراك السحابية: مساحة الخدمات غير مضبوطة' : `لم تُحدَّث بطاقة الاشتراك: ${subMirror.error ?? ''}`)
-  }
+  // ملاحظة العميل sub.message ليست لنا: نقرأ البطاقة أولاً ونحفظها كما هي، فلا تُمسح بإصدار مفتاح.
+  // أفضل جهد: غياب مساحة الخدمات لا يجوز أن يُلغي مفتاحاً صدر فعلاً في مساحة التراخيص.
+  await mirrorSubscriptionCard(input.deviceId, payload, notes)
 
   // حرق المفتاح السابق (اختياري) — بعد نجاح الإصدار فقط، وليس نفس البصمة الجديدة
   if (opts.burnFingerprint && opts.burnFingerprint !== fingerprint) {
@@ -176,6 +172,42 @@ async function signAvoidingRevoked(base: LicensePayload, notes: string[]): Promi
     }
   }
   throw new Error('كل صيغ المفتاح لهذه البيانات محروقة — غيّر المدة أو الباقة ثم أعد الإصدار')
+}
+
+/**
+ * بطاقة sub: في مساحة الخدمات — دمج لا استبدال:
+ *  • يحفظ sub.message (ملاحظة العميل) وأي حقل آخر كما هو،
+ *  • يحذف key/fingerprint من أي نسخة قديمة (كانت تحمل المفتاح)،
+ *  • إن تعذرت القراءة لا يُكتب شيء (الكتابة بلا قراءة تمسح الملاحظة).
+ */
+async function mirrorSubscriptionCard(deviceId: string, payload: LicensePayload, notes: string[]): Promise<void> {
+  const key = `sub:${deviceId}`
+  let prevRaw: string | null
+  try {
+    prevRaw = await readForUpdate('services', key)
+  } catch (e) {
+    const code = (e as { code?: string }).code
+    notes.push(code === 'ns_missing'
+      ? 'لم تُحدَّث بطاقة الاشتراك السحابية: مساحة الخدمات غير مضبوطة'
+      : `لم تُحدَّث بطاقة الاشتراك: ${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
+  let prev: Record<string, unknown> = {}
+  try {
+    const parsed = prevRaw ? JSON.parse(prevRaw) as unknown : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) prev = parsed as Record<string, unknown>
+  } catch { /* بطاقة تالفة: نعيد بناءها من الحمولة */ }
+  const next: Record<string, unknown> = {
+    ...prev,
+    plan: payload.plan, expiresAt: payload.expiresAt, customer: payload.customer, issuedAt: payload.issuedAt,
+    message: typeof prev.message === 'string' ? prev.message : '',
+  }
+  delete next.key
+  delete next.fingerprint
+  const r = await bridge.cf.put('services', key, JSON.stringify(next))
+  if (!r.ok) {
+    notes.push(r.code === 'ns_missing' ? 'لم تُحدَّث بطاقة الاشتراك السحابية: مساحة الخدمات غير مضبوطة' : `لم تُحدَّث بطاقة الاشتراك: ${r.error ?? ''}`)
+  }
 }
 
 /** يضيف سطراً لسجل الجهاز — أفضل جهد: فشل القراءة يتخطى السجل بدل مسح تاريخه. */
