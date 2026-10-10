@@ -6,7 +6,7 @@ import {
   DEVICE_ID_RE, keyFingerprint, LICENSE_FEATURES, FEATURE_LABELS_AR, MODULE_LABELS_AR, EXTRA_MODULES,
   PLAN_LABELS_AR, type LicensePlan, type LicenseFeature,
 } from '../../core/license.ts'
-import { DERIVED_FEATURES, finalFeatures, toCount, totalBranches } from '../../core/issueForm.ts'
+import { DERIVED_FEATURES, durationDays, finalFeatures, toCount, totalBranches } from '../../core/issueForm.ts'
 import { activityDisplay } from '../../core/activities.ts'
 import { Btn, Field, Select, useToast, Badge, EmptyState } from '../components/ui.tsx'
 import { IssueForm } from '../components/IssueForm.tsx'
@@ -70,7 +70,7 @@ function DefaultsTab() {
     setBusy(true)
     try {
       await updateGlobalSettings({
-        plan, days: toCount(days) || 365, extraUsers: toCount(users), extraBranches: toCount(branches),
+        plan, days: durationDays(days), extraUsers: toCount(users), extraBranches: toCount(branches),
         features: finalFeatures(features, plan, toCount(branches)), extraModules: modules,
       })
       toast('تم حفظ الافتراضيات ✓ — ستُعبّأ تلقائياً عند إصدار مفتاح لجهاز جديد', 'ok')
@@ -96,7 +96,7 @@ function DefaultsTab() {
       </div>
       <div className="grid-2">
         <Select label="الباقة" value={plan} onChange={(v) => setPlan(v as LicensePlan)} options={PLAN_OPTIONS} />
-        <Field label="المدة (أيام)" value={days} onChange={setDays} dir="ltr" />
+        <Field label="المدة (أيام)" value={days} onChange={setDays} dir="ltr" hint="0 = مدى الحياة" />
         <Field label="فروع إضافية بجانب الرئيسي" value={branches} onChange={setBranches} dir="ltr" placeholder="0"
           hint={`الحد الكلي: ${totalBranches(plan, toCount(branches))}`} />
         <Field label="مستخدمون إضافيون" value={users} onChange={setUsers} dir="ltr" placeholder="0" />

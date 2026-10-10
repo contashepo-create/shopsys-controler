@@ -187,7 +187,7 @@ export interface ControlerBridge {
   cf: {
     listKeys(ns: KvNamespace, prefix?: string, cursor?: string): Promise<CfListResult>
     get(ns: KvNamespace, key: string): Promise<CfGetResult>
-    put(ns: KvNamespace, key: string, value: string): Promise<CfWriteResult>
+    put(ns: KvNamespace, key: string, value: string, metadata?: Record<string, unknown>): Promise<CfWriteResult>
     delete(ns: KvNamespace, key: string): Promise<CfWriteResult>
     test(): Promise<{ ok: boolean; error?: string }>
     namespaces(): Promise<CfNamespacesResult>
@@ -343,7 +343,7 @@ function desktopBridge(): ControlerBridge | null {
     cf: {
       listKeys: (ns, prefix, cursor) => invoke('cf:request', { ns, op: 'listKeys', prefix, cursor }),
       get: (ns, key) => invoke('cf:request', { ns, op: 'get', key }),
-      put: (ns, key, value) => invoke('cf:request', { ns, op: 'put', key, value }),
+      put: (ns, key, value, metadata) => invoke('cf:request', { ns, op: 'put', key, value, ...(metadata ? { metadata } : {}) }),
       delete: (ns, key) => invoke('cf:request', { ns, op: 'delete', key }),
       test: () => invoke('cf:test'),
       namespaces: () => invoke('cf:namespaces'),

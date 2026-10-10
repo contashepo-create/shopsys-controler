@@ -20,6 +20,8 @@ export const SUPPORT_TEXT_MAX = 4000
 /** Same cleaning the worker applies to incoming customer text. */
 export function cleanSupportText(text: string, max = SUPPORT_TEXT_MAX): string {
   return String(text)
+    // محارف التحكم مقصودة هنا: نزعها هو الهدف
+    // oxlint-disable-next-line no-control-regex
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
     .trim()
     .slice(0, max)

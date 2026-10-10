@@ -7,6 +7,7 @@
 import { bridge } from './bridge.ts'
 import { appendLog, audit, issueLicense, readForUpdate, revokeLicense, type IssueLicenseInput, type IssueLicenseResult } from './actions.ts'
 import type { CustomerView } from '../core/customers.ts'
+import { deviceMetadata } from '../core/kvMetadata.ts'
 import type { LicenseFeature, LicensePlan } from '../core/license.ts'
 
 export interface QuickIssueInput {
@@ -46,7 +47,7 @@ export async function deactivateCustomer(c: CustomerView): Promise<{ notes: stri
       const o = JSON.parse(raw) as Record<string, unknown>
       o.disabledAt = new Date().toISOString()
       o.message = 'تم إيقاف الاشتراك — تواصل مع المطوّر'
-      const r = await bridge.cf.put('license', `dev:${c.deviceId}`, JSON.stringify(o))
+      const r = await bridge.cf.put('license', `dev:${c.deviceId}`, JSON.stringify(o), deviceMetadata(o))
       if (!r.ok) notes.push('حُرق المفتاح لكن تعذر تعليم سجل الجهاز بالإيقاف')
     }
   } catch {

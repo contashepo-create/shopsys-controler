@@ -102,10 +102,10 @@ describe('splitModules — كل نشاط × مجموعات عشوائية', () =
     }
   })
 
-  it('إظهار كل الأقسام: لا شيء مضمّن، وكل غير المملوك قابل للإضافة', () => {
-    const { included, addable } = splitModules({ activityId: 'grocery', owned: ['lab'], showAll: true })
-    expect(included).toEqual([])
-    expect(addable).toEqual(EXTRA_MODULES.filter((m) => m !== 'lab'))
+  it('الافتراضية من النشاط تُرجَع دائماً في included (لا خيار لإخفائها)', () => {
+    const { included } = splitModules({ activityId: 'grocery', owned: ['lab'] })
+    expect(included).toContain('pos')
+    expect(included).not.toContain('lab')
   })
 
   it('كل أقسام الأنشطة معروفة (لا خطأ إملائي يجعل قسماً «مضمّناً» لا وجود له)', () => {

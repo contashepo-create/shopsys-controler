@@ -8,11 +8,32 @@
  *    الموجودة تبقى محددة افتراضياً وإلا سُحبت من العميل.
  */
 
-import { EXTRA_MODULES, PLAN_LIMITS, type LicenseFeature, type LicensePlan } from './license.ts'
+import { EXTRA_MODULES, PLAN_LIMITS, daysBetween, type LicenseFeature, type LicensePlan } from './license.ts'
 import { modulesIncludedInActivity } from './activities.ts'
 
 /** الميزات التي تُشتق تلقائياً ولا تُعرض كخانة اختيار. */
 export const DERIVED_FEATURES: readonly LicenseFeature[] = ['multi_branch']
+
+/**
+ * مدة المفتاح بالأيام من حقل الإدخال.
+ *  • «0» صراحةً = مدى الحياة (بلا تاريخ انتهاء) — يطابق البوت: expiresAfterDays(0) = null.
+ *  • الفارغ أو غير الرقمي = 365 كما كان — حتى لا يصدر مفتاح بلا انتهاء بالخطأ.
+ * (toCount يعيد 0 للقيمة 0 فيسقط إلى 365، لذلك لا يُستعمل هنا.)
+ */
+export function durationDays(raw: string | null | undefined): number {
+  const s = String(raw ?? '').trim()
+  return /^\d{1,5}$/.test(s) ? Number(s) : 365
+}
+
+/**
+ * عدد الأيام من اليوم حتى تاريخ انتهاء يختاره المستخدم (YYYY-MM-DD).
+ * null إن لم يكن تاريخاً صالحاً أو ليس بعد اليوم (تاريخ اليوم/الماضي = غير مقبول).
+ */
+export function daysUntil(todayIso: string, dateIso: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return null
+  const n = daysBetween(todayIso, dateIso)
+  return Number.isFinite(n) && n >= 1 ? n : null
+}
 
 export function toCount(raw: string | number | null | undefined): number {
   const n = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim() || 0)
@@ -52,8 +73,10 @@ export interface ModuleSplit {
   addable: string[]
 }
 
-export function splitModules(input: { activityId?: string | null; owned: readonly string[]; showAll?: boolean }): ModuleSplit {
-  const included = input.showAll ? [] : modulesIncludedInActivity(input.activityId).filter((m) => EXTRA_MODULES.includes(m))
+export function splitModules(input: { activityId?: string | null; owned: readonly string[] }): ModuleSplit {
+  /* الافتراضية من النشاط (حسب نسخة اللوحة المطابقة لتطبيق العميل) — تُعرض مفعّلة ولا تُسحب،
+     ولا تُخفى: الواجهة تعرض كل الوحدات. */
+  const included = modulesIncludedInActivity(input.activityId).filter((m) => EXTRA_MODULES.includes(m))
   const owned = finalModules(input.owned)
   const taken = new Set([...included, ...owned])
   return { included: [...included], owned, addable: EXTRA_MODULES.filter((m) => !taken.has(m)) }

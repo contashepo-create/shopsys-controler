@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDataStore } from '../../stores/data.store.ts'
 import { deleteNotice, editNotice, listSentNotices, sendNotice } from '../../data/actions.ts'
+import { NOTICE_LEVEL_LABELS_AR, NOTICE_LEVELS, normalizeNoticeLevel, type NoticeLevel } from '../../core/notices.ts'
 import {
   customerActivity, describeTargeting, noticeRecipients, summarizeRecipients, validateNoticeBody, READ_STATE_LABELS_AR,
   type NoticeTargeting, type SentNotice, type NoticeReadState,
 } from '../../core/notices.ts'
-import { Btn, Field, Textarea, useToast, Badge, EmptyState, Modal, ConfirmDialog } from '../components/ui.tsx'
+import { Btn, Field, Textarea, Select, useToast, Badge, EmptyState, Modal, ConfirmDialog } from '../components/ui.tsx'
 import { activityLabel } from '../../core/activities.ts'
 
 type TargetType = 'all' | 'device' | 'group' | 'activity'
@@ -24,6 +25,7 @@ export function NotificationsPage() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [expiresDays, setExpiresDays] = useState('90')
+  const [level, setLevel] = useState<NoticeLevel>('info')
   const [busy, setBusy] = useState(false)
 
   const [sent, setSent] = useState<SentNotice[]>([])
@@ -79,6 +81,7 @@ export function NotificationsPage() {
       const res = await sendNotice({
         title: title.trim() || undefined,
         body,
+        level,
         expiresAt: new Date(Date.now() + days * 86400000).toISOString(),
         targeting,
         customers,
@@ -171,6 +174,12 @@ export function NotificationsPage() {
           <div className="card-title">✍️ نص الإشعار</div>
           <Field label="العنوان (اختياري)" value={title} onChange={setTitle} placeholder="رسالة من المطوّر" />
           <Textarea label="النص *" value={body} onChange={setBody} rows={5} placeholder="مثال: تم إصدار تحديث جديد — برجاء إعادة تشغيل البرنامج…" />
+          <Select
+            label="درجة الإلزام"
+            value={level}
+            onChange={(v) => setLevel(normalizeNoticeLevel(v))}
+            options={NOTICE_LEVELS.map((l) => ({ value: l, label: NOTICE_LEVEL_LABELS_AR[l] }))}
+          />
           <Field label="مدة العرض (أيام)" value={expiresDays} onChange={setExpiresDays} dir="ltr" hint="يختفي تلقائياً بعدها عند العميل" />
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <Btn kind="primary" disabled={busy || !body.trim()} onClick={() => void send()}>{busy ? 'جارٍ الإرسال…' : 'إرسال الإشعار'}</Btn>
@@ -198,6 +207,7 @@ export function NotificationsPage() {
                       <td style={{ maxInlineSize: 360 }}>
                         <div style={{ fontWeight: 700 }}>
                           {n.notice.title} {n.notice.editedAt ? <Badge kind="muted">معدّل</Badge> : null} {expired ? <Badge kind="danger">منتهٍ</Badge> : null}
+                          {normalizeNoticeLevel(n.notice.level) !== 'info' ? <Badge kind="danger">{NOTICE_LEVEL_LABELS_AR[normalizeNoticeLevel(n.notice.level)].split(' ')[0]}</Badge> : null}
                         </div>
                         <div className="muted" style={{ fontSize: 12.5 }}>{n.notice.body.length > 110 ? n.notice.body.slice(0, 110) + '…' : n.notice.body}</div>
                       </td>

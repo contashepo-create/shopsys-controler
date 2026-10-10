@@ -38,9 +38,6 @@ describe('الأقسام: لا يُرسَل للعميل قسم موجود عن�
     expect(s.addable).not.toContain('booking')
     expect(s.addable).toContain('installments')
   })
-  it('«إظهار كل الأقسام» يعرض أقسام النشاط للإضافة', () => {
-    expect(splitModules({ activityId: 'grocery', owned: [], showAll: true }).addable).toContain('pos')
-  })
   it('finalModules يزيل التكرار ويرتب قياسياً', () => {
     expect(finalModules(['pos', 'inventory', 'pos'])).toEqual(['pos', 'inventory'])
   })
@@ -143,7 +140,7 @@ import { describeTargeting } from '../src/core/notices.ts'
 
 describe('describeTargeting — اسم النشاط بدل المعرّف', () => {
   it('يعرض الاسم العربي للنشاط المعروف والمعرّف كما هو لغير المعروف', () => {
-    expect(describeTargeting({ type: 'activity', activityId: 'grocery' }, [])).toContain('بقالة')
+    expect(describeTargeting({ type: 'activity', activityId: 'grocery' }, [])).toContain('أغذية / سوبر ماركت')
     expect(describeTargeting({ type: 'activity', activityId: 'customX' }, [])).toContain('customX')
   })
 })

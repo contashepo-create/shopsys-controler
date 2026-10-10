@@ -1,0 +1,321 @@
+diff --git a/app/src/App.tsx b/app/src/App.tsx
+index 6145b80..95d3f85 100644
+--- a/app/src/App.tsx
++++ b/app/src/App.tsx
+@@ -371,7 +371,7 @@ export default function App() {
+        تكفي، فتُطلب من جديد — وهذا ما كان معلناً في المتجر («تطلب مجدداً عند
+        التحديث») ولم يكن منفذاً: كان الفحص `!legal` فقط. */
+     legal: legalCurrent,
+-    activatedKey, activatedPayload, trialStartedAt, lastSeenAt, revokedKeys,
++    activatedKey, activatedPayload, trialStartedAt, lastSeenAt, revokedKeys, deviceFlags,
+     setCloudData, lastHourlyBackupAt, setLastHourlyBackupAt, licenseAudit,
+   } = useAppStore()
+   /* الموافقة سارية فقط على الإصدار الحالي من الوثيقة — فأي تغيير جوهري في
+@@ -417,8 +417,8 @@ export default function App() {
+   }, [storesHydrated])
+ 
+   const licenseState = useMemo(
+-    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() }),
+-    [activatedPayload, trialStartedAt, lastSeenAt],
++    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags }),
++    [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags],
+   )
+   const lockReason = useMemo(
+     () => currentLockReason(licenseState, { activatedKey, activatedPayload, revokedKeys, licenseAudit, setup }),
+diff --git a/app/src/core/license.ts b/app/src/core/license.ts
+index d405808..5b4133e 100644
+--- a/app/src/core/license.ts
++++ b/app/src/core/license.ts
+@@ -1,4 +1,4 @@
+-import { effectiveFeatures, getActiveDeviceFlags } from './featureFlags.ts'
++import { effectiveFeatures, getActiveDeviceFlags, type DeviceFlags } from './featureFlags.ts'
+ 
+ /**
+  * الترخيص — ShopSys (المرحلة 5) — منقول مفهومياً من نظام mobileshop (القرار 4)
+@@ -328,6 +328,9 @@ export function evaluateLicense(args: {
+   trialStartedAt: string // ISO أول تشغيل
+   lastSeenAt: string // آخر يوم شوهد (مرساة ضد إرجاع الساعة)
+   today: string // ISO اليوم
++  /* أعلام الجهاز الحالية. يمرّرها كل مكان يحسب الحالة داخل useMemo، فتكون جزءاً من
++     الاعتماديات وتُعاد الحسبة عند تغيّر الإطفاء. غيابها (undefined) = الحالة المحفوظة في الوحدة. */
++  deviceFlags?: DeviceFlags | null
+ }): LicenseState {
+   /* ح2 (مراجعة ③): فشل مغلق على كل قيمة زمنية تالفة. قبل هذا الإصلاح كانت trialStartedAt = ""
+      تعطي left = NaN فلا يتحقق `<= 0` أبداً ⇒ تجربة لا تنتهي (مؤكد بالتجربة). */
+@@ -339,7 +342,8 @@ export function evaluateLicense(args: {
+ 
+   if (args.activatedPayload) {
+     // إطفاء سحابي (kill-switch): الميزة الممنوحة المُطفأة لا تُعتمد في أي بوابة
+-    const p: LicensePayload = { ...args.activatedPayload, features: effectiveFeatures(args.activatedPayload.features, getActiveDeviceFlags()) }
++    const flags = args.deviceFlags !== undefined ? args.deviceFlags : getActiveDeviceFlags()
++    const p: LicensePayload = { ...args.activatedPayload, features: effectiveFeatures(args.activatedPayload.features, flags) }
+     if (p.expiresAt === null) return { status: 'active', payload: p, daysLeft: null }
+     if (!isValidIsoDay(p.expiresAt)) return { status: 'invalid', reason: 'تاريخ انتهاء المفتاح غير صالح' }
+     const left = daysBetween(today, p.expiresAt)
+diff --git a/app/src/ui/pages/BranchesPage.tsx b/app/src/ui/pages/BranchesPage.tsx
+index 5c6a205..0f4f891 100644
+--- a/app/src/ui/pages/BranchesPage.tsx
++++ b/app/src/ui/pages/BranchesPage.tsx
+@@ -23,7 +23,7 @@ export function BranchesPage() {
+     branches, warehouses, treasuries, addBranch, updateBranch, removeBranch,
+     sales, saleReturns, purchases, purchaseReturns, transfers, items, journal, productionOrders, processingOrders,
+   } = useDataStore()
+-  const { setup, activatedPayload, trialStartedAt, lastSeenAt } = useAppStore()
++  const { setup, activatedPayload, trialStartedAt, lastSeenAt, deviceFlags } = useAppStore()
+   const toast = useToast()
+ 
+   const cur = (setup.countryCode && getCountry(setup.countryCode)?.currency) || { code: 'EGP', symbol: 'ج.م', decimals: 2 as const, name: '' }
+@@ -31,9 +31,9 @@ export function BranchesPage() {
+ 
+   // حد الفروع من الرخصة الموقعة فقط — لا يُتجاوز إلا بمفتاح جديد من المطوّر
+   const maxBranches = useMemo(() => {
+-    const state = evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() })
++    const state = evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags })
+     return state.status === 'active' ? effectiveLimits(activatedPayload).maxBranches : effectiveLimits(null).maxBranches
+-  }, [activatedPayload, trialStartedAt, lastSeenAt])
++  }, [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags])
+ 
+   /* ─── لوحة المقارنة (من نفس الدفاتر — لا عدادات موازية) ─── */
+   const comparison = useMemo(() => {
+diff --git a/app/src/ui/pages/EinvoicePage.tsx b/app/src/ui/pages/EinvoicePage.tsx
+index ab2a192..b816c9a 100644
+--- a/app/src/ui/pages/EinvoicePage.tsx
++++ b/app/src/ui/pages/EinvoicePage.tsx
+@@ -17,15 +17,15 @@ import {
+ import { Btn, Field, inputCls, useToast, EmptyState } from '../components/ui.tsx'
+ 
+ export function EinvoicePage() {
+-  const { setup, einvoice, updateEinvoice, activatedPayload, trialStartedAt, lastSeenAt } = useAppStore()
++  const { setup, einvoice, updateEinvoice, activatedPayload, trialStartedAt, lastSeenAt, deviceFlags } = useAppStore()
+   const { sales, customers, items } = useDataStore()
+   const toast = useToast()
+   const cur = (setup.countryCode && getCountry(setup.countryCode)?.currency) || { code: 'EGP', symbol: 'ج.م', decimals: 2 as const, name: '' }
+   const fmt = (m: number) => formatMinor(m, cur, false)
+ 
+   const lic = useMemo(
+-    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() }),
+-    [activatedPayload, trialStartedAt, lastSeenAt],
++    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags }),
++    [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags],
+   )
+   const saActive = hasFeature(lic, 'einvoice_sa')
+   const egActive = hasFeature(lic, 'einvoice_eg')
+diff --git a/app/src/ui/pages/LicensePage.tsx b/app/src/ui/pages/LicensePage.tsx
+index 5a92fcb..8d0ccaa 100644
+--- a/app/src/ui/pages/LicensePage.tsx
++++ b/app/src/ui/pages/LicensePage.tsx
+@@ -16,14 +16,14 @@ import { Btn, Field, inputCls, useToast } from '../components/ui.tsx'
+ const ALL_FEATURES: LicenseFeature[] = ['einvoice_eg', 'einvoice_sa', 'multi_branch', 'telegram_bot']
+ 
+ export function LicensePage() {
+-  const { deviceId, trialStartedAt, lastSeenAt, activatedPayload, licenseAudit, setActivated, clearActivation, revokedKeys, setup } = useAppStore()
++  const { deviceId, trialStartedAt, lastSeenAt, activatedPayload, licenseAudit, setActivated, clearActivation, revokedKeys, setup, deviceFlags } = useAppStore()
+   const toast = useToast()
+   const [keyInput, setKeyInput] = useState('')
+   const [busy, setBusy] = useState(false)
+ 
+   const state = useMemo(
+-    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() }),
+-    [activatedPayload, trialStartedAt, lastSeenAt],
++    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags }),
++    [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags],
+   )
+ 
+   const copyDevice = async () => {
+diff --git a/app/src/ui/pages/PurchasesPage.tsx b/app/src/ui/pages/PurchasesPage.tsx
+index 736047c..c40ed5c 100644
+--- a/app/src/ui/pages/PurchasesPage.tsx
++++ b/app/src/ui/pages/PurchasesPage.tsx
+@@ -68,7 +68,7 @@ function lineVatMinorFor(line: DraftLine, decimals: number, effectivePercent: nu
+ 
+ export function PurchasesPage() {
+   const { items, suppliers, purchases, purchaseExpensePayables, settlePurchaseExpensePayable, journal, projects, costCenters, expenseTemplates, addExpenseTemplate, treasuries, vehicles, custodyFiles, employees, warehouses, categories, advancedInvoiceDrafts, deleteAdvancedInvoiceDraft, addItem, postPurchase, addLatePurchaseExpense, editPurchase, getSupplierBalance, appUsers, currentUserId } = useDataStore()
+-  const { setup, activatedPayload, trialStartedAt, lastSeenAt, receipt, einvoice } = useAppStore()
++  const { setup, activatedPayload, trialStartedAt, lastSeenAt, receipt, einvoice, deviceFlags } = useAppStore()
+   const navigate = useNavigate()
+   const goTo = (path: string) => { if (!guardNavigation(() => navigate(path))) navigate(path) }
+   const [today] = useState(() => new Date().toISOString().slice(0, 10))
+@@ -76,8 +76,8 @@ export function PurchasesPage() {
+ 
+   // سياسة التعديل (طلب المالك): الفاتورة الإلكترونية مفعلة ⇒ لا تعديل — إشعار مدين على المورد
+   const lic = useMemo(
+-    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() }),
+-    [activatedPayload, trialStartedAt, lastSeenAt],
++    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags }),
++    [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags],
+   )
+   const einvoiceActive = electronicInvoiceLockActive({ licensed: hasFeature(lic, 'einvoice_sa') || hasFeature(lic, 'einvoice_eg'), enabled: einvoice.enabled === true, taxNumber: einvoice.taxNumber })
+   const editPolicy = invoiceEditPolicy({ einvoiceActive })
+diff --git a/app/src/ui/pages/SalesInvoicesPage.tsx b/app/src/ui/pages/SalesInvoicesPage.tsx
+index d9f68f3..361b1f4 100644
+--- a/app/src/ui/pages/SalesInvoicesPage.tsx
++++ b/app/src/ui/pages/SalesInvoicesPage.tsx
+@@ -36,7 +36,7 @@ import { openItemPricesWindow } from '../windows/windowStore.ts'
+ 
+ export function SalesInvoicesPage() {
+   const { sales, customers, journal, items, saleReturns, serials, installmentPlans, clientSettlements, vouchers, shifts, advancedInvoiceDrafts, deleteAdvancedInvoiceDraft, editSale, employees, costCenters, staffCommissions, addStaffCommission, getCustomerBalance, appUsers, currentUserId } = useDataStore()
+-  const { setup, receipt, einvoice, activatedPayload, trialStartedAt, lastSeenAt } = useAppStore()
++  const { setup, receipt, einvoice, activatedPayload, trialStartedAt, lastSeenAt, deviceFlags } = useAppStore()
+   const toast = useToast()
+   const navigate = useNavigate()
+   const goTo = (path: string) => { if (!guardNavigation(() => navigate(path))) navigate(path) }
+@@ -55,8 +55,8 @@ export function SalesInvoicesPage() {
+ 
+   // سياسة التعديل (طلب المالك): الفاتورة الإلكترونية مفعلة بمفتاح المطور ⇒ لا تعديل — إشعارات فقط
+   const lic = useMemo(
+-    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() }),
+-    [activatedPayload, trialStartedAt, lastSeenAt],
++    () => evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags }),
++    [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags],
+   )
+   const einvoiceActive = electronicInvoiceLockActive({ licensed: hasFeature(lic, 'einvoice_sa') || hasFeature(lic, 'einvoice_eg'), enabled: einvoice.enabled === true, taxNumber: einvoice.taxNumber })
+   const policy = invoiceEditPolicy({ einvoiceActive })
+diff --git a/app/src/ui/pages/SyncPage.tsx b/app/src/ui/pages/SyncPage.tsx
+index fa29c83..46faaa8 100644
+--- a/app/src/ui/pages/SyncPage.tsx
++++ b/app/src/ui/pages/SyncPage.tsx
+@@ -22,9 +22,9 @@ export function SyncPage() {
+   const toast = useToast()
+ 
+   const licensed = useMemo(() => {
+-    const state = evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() })
++    const state = evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags })
+     return hasFeature(state, 'cloud_sync')
+-  }, [activatedPayload, trialStartedAt, lastSeenAt])
++  }, [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags])
+ 
+   // وضع التشغيل الحالي (البنية الهجينة — 4 أوضاع) مشتق من الرخصة الموقَّعة فقط
+   const archMode = useMemo(
+diff --git a/app/src/ui/pages/TelegramPage.tsx b/app/src/ui/pages/TelegramPage.tsx
+index d7ac2c5..8d9234e 100644
+--- a/app/src/ui/pages/TelegramPage.tsx
++++ b/app/src/ui/pages/TelegramPage.tsx
+@@ -24,14 +24,14 @@ import { Btn, Field, inputCls, useToast } from '../components/ui.tsx'
+ 
+ 
+ export function TelegramPage() {
+-  const { setup, telegram, updateTelegram, schedule, updateSchedule, lastDailySentDay, activatedPayload, trialStartedAt, lastSeenAt } = useAppStore()
++  const { setup, telegram, updateTelegram, schedule, updateSchedule, lastDailySentDay, activatedPayload, trialStartedAt, lastSeenAt, deviceFlags } = useAppStore()
+   const { sales, saleReturns, items } = useDataStore()
+   const toast = useToast()
+ 
+   const licensed = useMemo(() => {
+-    const state = evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString() })
++    const state = evaluateLicense({ activatedPayload, trialStartedAt, lastSeenAt, today: new Date().toISOString(), deviceFlags })
+     return hasFeature(state, 'telegram_bot')
+-  }, [activatedPayload, trialStartedAt, lastSeenAt])
++  }, [activatedPayload, trialStartedAt, lastSeenAt, deviceFlags])
+ 
+   const [token, setToken] = useState('')
+   const [chatId, setChatId] = useState(telegram.chatId)
+diff --git a/app/tests/devbot_last_seen_reissue.test.ts b/app/tests/devbot_last_seen_reissue.test.ts
+index 4cf065d..4bf1080 100644
+--- a/app/tests/devbot_last_seen_reissue.test.ts
++++ b/app/tests/devbot_last_seen_reissue.test.ts
+@@ -79,7 +79,7 @@ describe('S4 — إعادة الإصدار عبر /اصدر تحفظ السجل'
+       sent.push(String(init?.body ?? ''))
+       return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
+     }))
+-    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'basic', expiresAt: '2026-11-01', customer: 'قديم', email: 'owner@shop.eg', lastSeenAt: '2026-10-09T10:00:00.000Z', message: 'موقوف', fingerprint: 'oldfp000' }) })
++    const kv = memKv({ [`dev:${DEV}`]: JSON.stringify({ plan: 'basic', expiresAt: '2026-11-01', customer: 'قديم', email: 'owner@shop.eg', lastSeenAt: '2026-10-09T10:00:00.000Z', message: 'موقوف', disabledAt: '2026-10-08T00:00:00.000Z', fingerprint: 'oldfp000' }) })
+     const env = {
+       WEBHOOK_SECRET: 'hook', TELEGRAM_ADMIN_ID: '111', TELEGRAM_BOT_TOKEN: 't', DEV_PRIVATE_KEY_B64U: privB64, SHOPSYS_CONTROL: kv,
+     }
+@@ -94,6 +94,9 @@ describe('S4 — إعادة الإصدار عبر /اصدر تحفظ السجل'
+     expect(saved.email).toBe('owner@shop.eg')
+     expect(saved.lastSeenAt).toBe('2026-10-09T10:00:00.000Z')
+     expect(saved.fingerprint).not.toBe('oldfp000')
++    // رسالة الإيقاف تخص الحالة السابقة ⇒ تُمسح، وعلامة الإيقاف تُزال لأن الإصدار تنشيط (كما تفعل اللوحة)
++    expect(saved.message).toBe('')
++    expect(saved).not.toHaveProperty('disabledAt')
+     expect(kv.store.get(`dev:${DEV}`)!.metadata).toMatchObject({ plan: 'pro', email: 'owner@shop.eg', customer: "النور" })
+   })
+ })
+diff --git a/app/tests/feature_flags_reactive.test.tsx b/app/tests/feature_flags_reactive.test.tsx
+new file mode 100644
+index 0000000..14ac729
+--- /dev/null
++++ b/app/tests/feature_flags_reactive.test.tsx
+@@ -0,0 +1,40 @@
++/**
++ * الإطفاء السحابي يصل الشاشة المفتوحة فوراً — لا عند إعادة التشغيل فقط.
++ *
++ * الخلل الذي يمنعه هذا الاختبار: حالة الترخيص كانت تُحسب داخل useMemo بمعتمديات لا تشمل
++ * أعلام الجهاز، فيبقى الميزة ظاهرة بعد وصول الإطفاء حتى تُعاد تهيئة الصفحة.
++ */
++import { describe, it, expect, afterEach } from 'vitest'
++import { render, screen, act, cleanup } from '@testing-library/react'
++import React from 'react'
++import { MemoryRouter } from 'react-router-dom'
++
++const { useAppStore } = await import('../src/stores/app.store.ts')
++const { TelegramPage } = await import('../src/ui/pages/TelegramPage.tsx')
++const { ToastHost } = await import('../src/ui/components/ui.tsx')
++const { setActiveDeviceFlags } = await import('../src/core/featureFlags.ts')
++
++const today = new Date().toISOString().slice(0, 10)
++const payload = {
++  v: 1 as const, deviceId: 'DEV-1', customer: 'محل', plan: 'pro' as const,
++  features: ['telegram_bot' as const], issuedAt: today, expiresAt: null,
++}
++
++afterEach(() => {
++  cleanup()
++  setActiveDeviceFlags(null)
++  useAppStore.setState({ deviceFlags: null })
++})
++
++describe('إطفاء الميزة من المتجر يصل الصفحة المفتوحة', () => {
++  it('بوت التليجرام: ممنوح ⇒ الصفحة مفتوحة، ثم إطفاء سحابي ⇒ شاشة القفل فوراً', async () => {
++    useAppStore.setState({ activatedPayload: payload, trialStartedAt: today, lastSeenAt: today, deviceFlags: null })
++    render(<MemoryRouter><TelegramPage /><ToastHost /></MemoryRouter>)
++    expect(screen.queryByText('بوت التليجرام ميزة مرخّصة')).toBeNull()
++
++    act(() => {
++      useAppStore.getState().setCloudData({ flags: { disabledFeatures: ['telegram_bot'], noteAr: 'متأخر في السداد', updatedAt: today } })
++    })
++    expect(await screen.findByText('بوت التليجرام ميزة مرخّصة')).toBeTruthy()
++  })
++})
+diff --git a/app/tests/feature_kill_switch.test.ts b/app/tests/feature_kill_switch.test.ts
+index fbc8162..bfb2f09 100644
+--- a/app/tests/feature_kill_switch.test.ts
++++ b/app/tests/feature_kill_switch.test.ts
+@@ -44,6 +44,15 @@ describe('الإطفاء السحابي للميزات', () => {
+     expect(effectiveFeatures(payload.features, flags)).not.toContain('einvoice_sa')
+   })
+ 
++  it('الأعلام الممرّرة صراحة تتغلب على الحالة المحفوظة (اعتماد صريح لـuseMemo)', () => {
++    setActiveDeviceFlags({ disabledFeatures: ['cloud_sync'], noteAr: '', updatedAt: '' })
++    // المرسَل صراحةً هو الحقيقة: null يعني «لا إطفاء» حتى لو بقيت حالة قديمة في الوحدة
++    expect(hasFeature(evaluateLicense({ ...base, deviceFlags: null }), 'cloud_sync')).toBe(true)
++    const off = evaluateLicense({ ...base, deviceFlags: { disabledFeatures: ['telegram_bot'], noteAr: '', updatedAt: '' } })
++    expect(hasFeature(off, 'telegram_bot')).toBe(false)
++    expect(hasFeature(off, 'cloud_sync')).toBe(true)
++  })
++
+   it('إلغاء الأعلام (null) يعيد الميزة فوراً', () => {
+     setActiveDeviceFlags({ disabledFeatures: ['cloud_sync'], noteAr: '', updatedAt: '' })
+     expect(hasFeature(evaluateLicense(base), 'cloud_sync')).toBe(false)
+diff --git a/tools/devbot/src/worker.js b/tools/devbot/src/worker.js
+index 89c7a2e..f07d4a5 100644
+--- a/tools/devbot/src/worker.js
++++ b/tools/devbot/src/worker.js
+@@ -419,12 +419,16 @@ async function handleUpdate(update, cfg) {
+         const fp = keyFingerprint(key)
+         await cfg.kv.put(`lic:${fp}`, JSON.stringify({ payload, key, issuedAt: payload.issuedAt, revoked: false }))
+         /* S4: الإصدار يحدّث السجل ولا يستبدله — يحفظ البريد وآخر ظهور وأي حقل آخر
+-           (كان يُكتب من الصفر فيضيع البريد عند كل إعادة إصدار). */
++           (كان يُكتب من الصفر فيضيع البريد عند كل إعادة إصدار).
++           استثناءان مقصودان، ومطابقان لما تفعله اللوحة (mergeDevRecord):
++           • message تُمسح: رسالة المطوّر (مثل «تم إيقاف الاشتراك») تخص الحالة السابقة؛
++           • disabledAt تُزال: الإصدار تنشيط للجهاز. */
+         const prevRaw = await cfg.kv.get(`dev:${deviceId}`)
+         const prevRecord = prevRaw ? JSON.parse(prevRaw) : {}
+         const deviceRecord = {
+           ...prevRecord, plan, expiresAt: payload.expiresAt, customer: payload.customer, message: '', fingerprint: fp,
+         }
++        delete deviceRecord.disabledAt
+         await cfg.kv.put(`dev:${deviceId}`, JSON.stringify(deviceRecord), { metadata: deviceMetadata(deviceRecord) })
+         await appendDeviceLog(cfg, deviceId, `تفعيل ${plan} حتى ${payload.expiresAt ?? 'الحياة'} — ${payload.customer}${extraModules.length ? ` +وحدات ${extraModules.join(',')}` : ''}`)
+         return {

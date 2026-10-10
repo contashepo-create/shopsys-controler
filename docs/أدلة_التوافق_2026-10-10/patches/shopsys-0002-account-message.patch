@@ -1,0 +1,298 @@
+diff --git a/app/src/App.tsx b/app/src/App.tsx
+index 9c57c30..6145b80 100644
+--- a/app/src/App.tsx
++++ b/app/src/App.tsx
+@@ -8,7 +8,7 @@ import { isDailySendDue, localNowIso } from './core/schedule.ts'
+ import { runSyncCycle, watchLocalChanges } from './data/syncRunner.ts'
+ import { hasFeature } from './core/license.ts'
+ import { botConnected, sendDailyReportNow, sendBackupNow } from './ui/telegramSender.ts'
+-import { fetchAbout, fetchRevocationList, mergeRevocationLists, fetchCloudNotices, LICENSE_CLOUD_BASE_URL, APP_SERVICES_CLOUD_BASE_URL } from './core/cloud.ts'
++import { fetchAbout, fetchAccountMessage, fetchRevocationList, mergeRevocationLists, fetchCloudNotices, LICENSE_CLOUD_BASE_URL, APP_SERVICES_CLOUD_BASE_URL } from './core/cloud.ts'
+ import { fetchDeviceFlags, effectiveFeatures } from './core/featureFlags.ts'
+ /* بند 2 (تدقيق 2026-10-08): بلاغ التسجيل الجديد يصل المطوّر عبر مركز التحكم */
+ import { buildRegistrationReport, shouldReportRegistration, sendRegistrationReport } from './core/registration.ts'
+@@ -496,8 +496,9 @@ export default function App() {
+     let cancelled = false
+     const sync = async () => {
+       const devId = useAppStore.getState().deviceId
+-      const [about, revokedDevbot, revokedServices, flags] = await Promise.all([
++      const [about, accountMessage, revokedDevbot, revokedServices, flags] = await Promise.all([
+         fetchAbout(LICENSE_CLOUD_BASE_URL),
++        fetchAccountMessage(LICENSE_CLOUD_BASE_URL, devId), // رسالة المطوّر لهذا الجهاز (عرض فقط)
+         fetchRevocationList(LICENSE_CLOUD_BASE_URL),
+         /* ث8: لكل عامل قائمة إبطال مستقلة — نقرأهما معاً ونوحّدهما، وإلا فالحرق
+            من العامل الآخر لا يصل ويبقى المفتاح المحروق يعمل عند العميل. */
+@@ -507,9 +508,10 @@ export default function App() {
+       if (cancelled) return
+       const revoked = mergeRevocationLists(revokedDevbot, revokedServices)
+       // فشل الجلب (أوفلاين) لا يمس آخر بيانات محفوظة
+-      if (about !== null || revoked !== null || flags !== null) {
++      if (about !== null || accountMessage !== null || revoked !== null || flags !== null) {
+         setCloudData({
+           ...(about !== null ? { about } : {}),
++          ...(accountMessage !== null ? { accountMessage } : {}),
+           ...(revoked !== null ? { revoked } : {}),
+           ...(flags !== null ? { flags } : {}),
+         })
+diff --git a/app/src/core/cloud.ts b/app/src/core/cloud.ts
+index f72ebd5..50aae4e 100644
+--- a/app/src/core/cloud.ts
++++ b/app/src/core/cloud.ts
+@@ -307,3 +307,21 @@ export async function fetchCloudNotices(baseUrl: string, deviceId: string): Prom
+   const raw = await getJson(`${baseUrl.replace(/\/$/, '')}/notifications/${encodeURIComponent(deviceId)}`)
+   return raw == null ? null : parseCloudNotices(raw)
+ }
++
++/* ─── رسالة المطوّر لهذا الجهاز (عرض فقط) ───
++ * مصدرها حقل `message` في dev:<deviceId> (أمر `/رسالة` في بوت المركز)، ويعيده
++ * /subscription. هذه رسالة **من المطوّر إلى العميل** فقط. لا تمنح ولا تسحب شيئاً:
++ * الحجية للمفتاح الموقّع. (لا تُخلط مع sub.message في بوت الخدمات — هذا الحقل
++ * ملاحظة من العميل إلى المطوّر.) */
++
++/** تنقية `message` من استجابة /subscription — نص عرض عادي بطول محدود */
++export function parseAccountMessage(raw: unknown): string {
++  if (typeof raw !== 'object' || raw === null) return ''
++  return sanitizeAboutText((raw as Record<string, unknown>).message, 300)
++}
++
++/** `null` = تعذّر الجلب (أوفلاين) ⇒ لا يُمسّ المحفوظ */
++export async function fetchAccountMessage(baseUrl: string, deviceId: string): Promise<string | null> {
++  const raw = await getJson(`${baseUrl.replace(/\/$/, '')}/subscription/${encodeURIComponent(deviceId)}`)
++  return raw == null ? null : parseAccountMessage(raw)
++}
+diff --git a/app/src/stores/app.store.ts b/app/src/stores/app.store.ts
+index 1aa818f..4751d45 100644
+--- a/app/src/stores/app.store.ts
++++ b/app/src/stores/app.store.ts
+@@ -228,10 +228,12 @@ interface AppState {
+   touchLastSeen: () => void
+   // ─── السحابة (القرار 28): آخر ما جُلب من Cloudflare — يعمل أوفلاين بآخر نسخة ───
+   cloudAbout: AboutContent | null
++  /** رسالة المطوّر لهذا الجهاز (عرض فقط) — تُحفظ آخر قيمة للعمل أوفلاين */
++  cloudAccountMessage: string
+   revokedKeys: string[] // بصمات المفاتيح المحروقة
+   cloudNotifications: CloudNotice[]
+   cloudSyncedAt: string | null
+-  setCloudData: (patch: { about?: AboutContent | null; revoked?: string[]; flags?: DeviceFlags | null; notifications?: CloudNotice[] }) => void
++  setCloudData: (patch: { about?: AboutContent | null; accountMessage?: string; revoked?: string[]; flags?: DeviceFlags | null; notifications?: CloudNotice[] }) => void
+   /**
+    * بند 10 (تدقيق 2026-10-08): التنبيهات التي أقرّ بها المستخدم — تُحفظ محلياً
+    * فلا تعود النافذة المنبثقة، ويُرسل إيصال قراءة للمطوّر (best-effort).
+@@ -683,6 +685,7 @@ export const useAppStore = create<AppState>()(
+           return now > s.lastSeenAt ? { lastSeenAt: now } : {}
+         }),
+       cloudAbout: null,
++      cloudAccountMessage: '',
+       revokedKeys: [],
+       cloudNotifications: [],
+       ackedNoticeIds: [],
+@@ -701,6 +704,7 @@ export const useAppStore = create<AppState>()(
+         if (patch.flags !== undefined) setActiveDeviceFlags(patch.flags)
+         set((s) => ({
+           cloudAbout: patch.about !== undefined ? patch.about : s.cloudAbout,
++          cloudAccountMessage: patch.accountMessage !== undefined ? patch.accountMessage : s.cloudAccountMessage,
+           revokedKeys: patch.revoked !== undefined ? patch.revoked : s.revokedKeys,
+           cloudNotifications: patch.notifications !== undefined ? patch.notifications : s.cloudNotifications,
+           deviceFlags: patch.flags !== undefined ? patch.flags : s.deviceFlags,
+diff --git a/app/src/ui/LockScreen.tsx b/app/src/ui/LockScreen.tsx
+index d0d6936..b64a01a 100644
+--- a/app/src/ui/LockScreen.tsx
++++ b/app/src/ui/LockScreen.tsx
+@@ -18,6 +18,7 @@ import { LOCK_REASON_LABELS, toCsv, type LockReason } from '../core/security.ts'
+ import { FALLBACK_ABOUT, hasAboutContact, whatsappLink } from '../core/cloud.ts'
+ import { buildBackup, backupFileName } from '../core/backup.ts'
+ import { Btn, inputCls, useToast } from './components/ui.tsx'
++import { DeveloperMessage } from './components/DeveloperMessage.tsx'
+ 
+ const DATA_VERSION = 6 // إصدار persist لمخزن shopsys-data
+ const money = (minor: number) => (minor / 100).toFixed(2)
+@@ -32,7 +33,7 @@ function downloadBlob(content: string, filename: string, mime: string) {
+ }
+ 
+ export function LockScreen({ reason, state }: { reason: LockReason; state: LicenseState }) {
+-  const { deviceId, setup, cloudAbout, revokedKeys, setActivated, applyActivityChangeKey } = useAppStore()
++  const { deviceId, setup, cloudAbout, cloudAccountMessage, revokedKeys, setActivated, applyActivityChangeKey } = useAppStore()
+   const data = useDataStore()
+   const toast = useToast()
+   const info = LOCK_REASON_LABELS[reason]
+@@ -117,6 +118,8 @@ export function LockScreen({ reason, state }: { reason: LockReason; state: Licen
+           )}
+         </div>
+ 
++        <DeveloperMessage message={cloudAccountMessage} />
++
+         <div className="grid md:grid-cols-2 gap-4">
+           {/* التفعيل */}
+           <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 space-y-3">
+diff --git a/app/src/ui/components/DeveloperMessage.tsx b/app/src/ui/components/DeveloperMessage.tsx
+new file mode 100644
+index 0000000..133693f
+--- /dev/null
++++ b/app/src/ui/components/DeveloperMessage.tsx
+@@ -0,0 +1,13 @@
++/**
++ * رسالة المطوّر لهذا الجهاز (عرض فقط). تظهر في «حول» وفي شاشة القفل.
++ * النص يُعرض كنص عادي (React يعقّمه)، ولا يمنح ولا يسحب أي صلاحية.
++ */
++export function DeveloperMessage({ message }: { message: string }) {
++  if (!message) return null
++  return (
++    <div role="note" className="rounded-2xl border border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 p-4 space-y-1 text-start">
++      <div className="font-black text-sky-800 dark:text-sky-200 text-sm">رسالة من المطوّر</div>
++      <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{message}</p>
++    </div>
++  )
++}
+diff --git a/app/src/ui/pages/AboutPage.tsx b/app/src/ui/pages/AboutPage.tsx
+index be775d4..119c0d4 100644
+--- a/app/src/ui/pages/AboutPage.tsx
++++ b/app/src/ui/pages/AboutPage.tsx
+@@ -4,9 +4,10 @@
+  * وتعمل بآخر نسخة محفوظة أوفلاين.
+  */
+ import { Info, MessageCircle, Phone, Globe, RefreshCw, Scale, Mail, MapPin, Clock } from 'lucide-react'
+-import { useState } from 'react'
++import { useEffect, useState } from 'react'
+ import { useAppStore } from '../../stores/app.store.ts'
+-import { fetchAbout, LICENSE_CLOUD_BASE_URL, FALLBACK_ABOUT, hasAboutContact, whatsappLink } from '../../core/cloud.ts'
++import { fetchAbout, fetchAccountMessage, LICENSE_CLOUD_BASE_URL, FALLBACK_ABOUT, hasAboutContact, whatsappLink } from '../../core/cloud.ts'
++import { DeveloperMessage } from '../components/DeveloperMessage.tsx'
+ import { APP_VERSION, fetchUpdateInfo, decideUpdate, buildUpdatePlan, type UpdateDecision } from '../../core/updates.ts'
+ import { DownloadCloud, ShieldCheck } from 'lucide-react'
+ import { PLAN_LABELS } from '../../core/license.ts'
+@@ -15,11 +16,21 @@ import { isElectronRuntime } from '../../data/desktopBridge.ts'
+ import { Btn, useToast } from '../components/ui.tsx'
+ 
+ export function AboutPage() {
+-  const { cloudAbout, cloudSyncedAt, setCloudData, deviceId, activatedPayload, setup } = useAppStore()
++  const { cloudAbout, cloudAccountMessage, cloudSyncedAt, setCloudData, deviceId, activatedPayload, setup } = useAppStore()
+   const toast = useToast()
+   const [busy, setBusy] = useState(false)
+   const about = cloudAbout ?? FALLBACK_ABOUT
+ 
++  // رسالة المطوّر لهذا الجهاز: تُحدَّث عند فتح «حول» (بجانب المزامنة الدورية)
++  useEffect(() => {
++    if (!deviceId) return
++    let cancelled = false
++    void fetchAccountMessage(LICENSE_CLOUD_BASE_URL, deviceId).then((msg) => {
++      if (!cancelled && msg !== null) setCloudData({ accountMessage: msg })
++    })
++    return () => { cancelled = true }
++  }, [deviceId, setCloudData])
++
+   // فحص آخر إصدار منشور على GitHub — Cloudflare مخصص للترخيص ومحتوى «حول».
+   const [updBusy, setUpdBusy] = useState(false)
+   const [updDecision, setUpdDecision] = useState<UpdateDecision | null>(null)
+@@ -49,6 +60,7 @@ export function AboutPage() {
+         <img src="./app-logo.png" alt="TAHAKAM ERP" className="max-h-32 mx-auto object-contain rounded-2xl shadow-lg" />
+         <h1 className="text-2xl font-black">{about.title}</h1>
+         <p className="text-slate-500 dark:text-slate-400 whitespace-pre-wrap">{about.body}</p>
++        <DeveloperMessage message={cloudAccountMessage} />
+         {/* بند 9 (تدقيق 2026-10-08): كل قنوات التواصل — تُملأ من لوحة المطوّر.
+             الروابط معقّمة في parseAbout (http/https/mailto/tel فقط). */}
+         {hasAboutContact(about) ? (
+diff --git a/app/tests/account_message.test.tsx b/app/tests/account_message.test.tsx
+new file mode 100644
+index 0000000..ea90fab
+--- /dev/null
++++ b/app/tests/account_message.test.tsx
+@@ -0,0 +1,99 @@
++/**
++ * رسالة المطوّر لهذا الجهاز (عرض فقط) — مسار واحد من بوت المركز إلى شاشتي «حول» والقفل.
++ *
++ * يثبت هذا الاختبار:
++ *   ① العقد: حقل `message` في dev:<id> يخرج من /subscription في عامل devbot ويصل التطبيق.
++ *   ② التنقية: نص عرض عادي، بلا وسوم ولا محارف تحكم، وبطول محدود.
++ *   ③ الفشل الشبكي لا يمسح الرسالة المحفوظة (أوفلاين أولاً).
++ *   ④ الرسالة لا تُنفَّذ كـHTML، وتظهر فقط عند وجود نص.
++ */
++import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
++import { render, cleanup, screen } from '@testing-library/react'
++import React from 'react'
++
++const { parseAccountMessage, fetchAccountMessage, LICENSE_CLOUD_BASE_URL } = await import('../src/core/cloud.ts')
++const devbotWorker = (await import('../../tools/devbot/src/worker.js')).default
++const { DeveloperMessage } = await import('../src/ui/components/DeveloperMessage.tsx')
++
++class MemoryKv {
++  private values = new Map<string, string>()
++  async get(key: string) { return this.values.get(key) ?? null }
++  async put(key: string, value: string) { this.values.set(key, String(value)) }
++  async delete(key: string) { this.values.delete(key) }
++  async list() { return { keys: [...this.values.keys()].map((name) => ({ name })), list_complete: true } }
++}
++
++const DEV = 'a1b2c3d4e5f60718'
++const env_ = (kv: MemoryKv) => ({
++  SHOPSYS_CONTROL: kv,
++  TELEGRAM_BOT_TOKEN: 'bot-token',
++  TELEGRAM_ADMIN_ID: '777',
++  WEBHOOK_SECRET: 'hook-secret',
++  DEV_PRIVATE_KEY_B64U: 'unused-here',
++})
++
++beforeEach(() => {
++  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('offline'))))
++})
++
++describe('① العقد: dev.message من devbot يصل التطبيق', () => {
++  it('الرسالة المكتوبة في dev: تُقرأ من /subscription بالاسم نفسه', async () => {
++    const kv = new MemoryKv()
++    await kv.put(`dev:${DEV}`, JSON.stringify({ plan: 'basic', expiresAt: null, message: 'يرجى التواصل لتجديد الاشتراك' }))
++    const res = await devbotWorker.fetch(new Request(`https://x.dev/subscription/${DEV}`), env_(kv)) as Response
++    expect(parseAccountMessage(await res.json())).toBe('يرجى التواصل لتجديد الاشتراك')
++  })
++
++  it('جهاز بلا سجل ⇒ رسالة فارغة (لا تبقى رسالة قديمة)', async () => {
++    const kv = new MemoryKv()
++    const res = await devbotWorker.fetch(new Request(`https://x.dev/subscription/${DEV}`), env_(kv)) as Response
++    expect(parseAccountMessage(await res.json())).toBe('')
++  })
++})
++
++describe('② التنقية', () => {
++  it('ليس كائناً ⇒ فارغ', () => {
++    expect(parseAccountMessage(null)).toBe('')
++    expect(parseAccountMessage('نص')).toBe('')
++    expect(parseAccountMessage({})).toBe('')
++    expect(parseAccountMessage({ message: 42 })).toBe('')
++  })
++
++  it('تزيل الزاويتين < > ومحارف التحكم وتقصّ الطول (لا وسم فعلي يبقى)', () => {
++    expect(parseAccountMessage({ message: '  <b>مرحبا</b>\u0007  ' })).toBe('bمرحبا/b')
++    expect(parseAccountMessage({ message: 'x'.repeat(500) })).toHaveLength(300)
++  })
++})
++
++describe('③ الجلب', () => {
++  it('يبني الرابط بمعرف مُرمَّز ويعيد الرسالة', async () => {
++    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ plan: 'basic', message: 'تنبيه' }), { status: 200 })))
++    vi.stubGlobal('fetch', fetchMock)
++    expect(await fetchAccountMessage(`${LICENSE_CLOUD_BASE_URL}/`, 'id/with space')).toBe('تنبيه')
++    expect(fetchMock.mock.calls[0][0]).toBe(`${LICENSE_CLOUD_BASE_URL}/subscription/id%2Fwith%20space`)
++  })
++
++  it('أوفلاين ⇒ null (لا يُمسّ المحفوظ)', async () => {
++    expect(await fetchAccountMessage(LICENSE_CLOUD_BASE_URL, DEV)).toBeNull()
++  })
++
++  it('استجابة خطأ HTTP ⇒ null', async () => {
++    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('no', { status: 500 }))))
++    expect(await fetchAccountMessage(LICENSE_CLOUD_BASE_URL, DEV)).toBeNull()
++  })
++})
++
++describe('④ العرض', () => {
++  afterEach(() => cleanup())
++
++  it('بلا نص لا يظهر أي صندوق', () => {
++    const { container } = render(<DeveloperMessage message="" />)
++    expect(container.innerHTML).toBe('')
++  })
++
++  it('النص يظهر كنص عادي ولا يُنفَّذ كـHTML', () => {
++    render(<DeveloperMessage message="<img src=x onerror=alert(1)>مرحباً" />)
++    expect(screen.getByRole('note').textContent).toContain('<img src=x onerror=alert(1)>مرحباً')
++    expect(screen.getByRole('note').querySelector('img')).toBeNull()
++  })
++})

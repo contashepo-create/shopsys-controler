@@ -39,7 +39,7 @@ function viewsFromKv() {
 beforeEach(() => { h.fake.reset() })
 
 describe('issueLicense — الإصدار وما يُكتب في KV', () => {
-  it('جهاز جديد: يكتب lic: وdev: وlog: وsub: ومفتاحاً يتحقق منه تطبيق العميل', async () => {
+  it('جهاز جديد: يكتب lic: وdev: وlog: وsub: (بلا مفتاح)، والمفتاح يتحقق منه تطبيق العميل', async () => {
     const res = await actions.issueLicense(baseInput({ activityId: 'grocery', extraModules: ['cars'] }))
     const payload = await verifyLicenseKey(res.key, DEV, h.fake.signer.publicKeyB64u)
     expect(payload).toMatchObject({ deviceId: DEV, customer: 'بقالة النور', plan: 'basic', activityId: 'grocery', extraModules: ['cars'] })
@@ -53,7 +53,11 @@ describe('issueLicense — الإصدار وما يُكتب في KV', () => {
     const log = h.fake.json<{ text: string }[]>('license', `log:${DEV}`)!
     expect(log).toHaveLength(1)
     expect(log[0].text).toContain('تفعيل basic')
-    expect(h.fake.json('services', `sub:${DEV}`)).toMatchObject({ plan: 'basic', key: res.key, fingerprint: res.fingerprint })
+    // sub: نسخة ثانوية لبوت الخدمات — بلا المفتاح ولا بصمته (لا يقرؤهما أحد)
+    const sub = h.fake.json<Record<string, unknown>>('services', `sub:${DEV}`)!
+    expect(sub).toMatchObject({ plan: 'basic' })
+    expect(sub).not.toHaveProperty('key')
+    expect(sub).not.toHaveProperty('fingerprint')
     expect(res.notes).toEqual([])
     expect(h.fake.audit.map((a) => a.action)).toEqual(['license_issue'])
   })
@@ -71,6 +75,24 @@ describe('issueLicense — الإصدار وما يُكتب في KV', () => {
     expect(payload.extraModules).toEqual(['cars', 'pos'])
   })
 
+  it('بطاقة sub: دمج لا استبدال: تحفظ ملاحظة العميل وأي حقل آخر، وتزيل key/fingerprint القديمين', async () => {
+    h.fake.seed('services', `sub:${DEV}`, { plan: 'basic', expiresAt: null, message: 'العميل يطلب ترقية', extra: 1, key: 'OLDKEY', fingerprint: 'deadbeef' })
+    await actions.issueLicense(baseInput({ plan: 'pro', days: 30 }))
+    const sub = h.fake.json<Record<string, unknown>>('services', `sub:${DEV}`)!
+    expect(sub).toMatchObject({ plan: 'pro', message: 'العميل يطلب ترقية', extra: 1 })
+    expect(sub).not.toHaveProperty('key')
+    expect(sub).not.toHaveProperty('fingerprint')
+  })
+
+  it('تعذر قراءة sub: ⇒ لا يُكتب فوقها (ملاحظة العميل تبقى)، والإصدار ينجح مع ملاحظة', async () => {
+    h.fake.seed('services', `sub:${DEV}`, { plan: 'basic', message: 'ملاحظة مهمة' })
+    h.fake.failGet.add(`services:sub:${DEV}`)
+    const res = await actions.issueLicense(baseInput())
+    expect(res.notes?.join(' ')).toContain('بطاقة الاشتراك')
+    expect(h.fake.json('services', `sub:${DEV}`)).toMatchObject({ plan: 'basic', message: 'ملاحظة مهمة' })
+    expect(h.fake.json('license', `lic:${res.fingerprint}`)).toMatchObject({ revoked: false })
+  })
+
   it('مدى الحياة: expiresAt = null في المفتاح وdev: وsub:', async () => {
     const res = await actions.issueLicense(baseInput({ plan: 'lifetime', days: 999 }))
     expect(res.payload.expiresAt).toBeNull()
@@ -82,6 +104,21 @@ describe('issueLicense — الإصدار وما يُكتب في KV', () => {
     const res = await actions.issueLicense(baseInput({ activityId: 'carParts' }))
     expect(decodeLicenseKey(res.key).payload.activityId).toBe('carParts')
     expect(h.fake.json<{ activityId: string }>('license', `dev:${DEV}`)!.activityId).toBe('carParts')
+  })
+
+  it('dev: يُكتب مع فهرس metadata بالشكل الذي يقرؤه البوت (التذكير اليومي لا ينهار)', async () => {
+    await actions.issueLicense(baseInput({ customer: 'بقالة النور', plan: 'pro', days: 30 }))
+    const meta = h.fake.meta.license.get(`dev:${DEV}`)
+    expect(meta).toMatchObject({ v: 1, customer: 'بقالة النور', plan: 'pro' })
+    expect(meta?.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('الرد على الدعم يكتب فهرس chat: كما يكتبه cloud worker (count/lastFrom/lastText)', async () => {
+    h.fake.seed('services', `chat:${DEV}`, [{ id: 1, from: 'client', text: 'سؤال من العميل', at: '2026-10-09T10:00:00Z' }])
+    await actions.replySupport(DEV, 'رد من المطوّر')
+    expect(h.fake.meta.services.get(`chat:${DEV}`)).toEqual({
+      v: 1, count: 2, lastFrom: 'developer', lastAt: expect.any(String), lastText: 'رد من المطوّر',
+    })
   })
 
   it('يدمج سجل dev: ولا يستبدله: يحفظ ما كتبه التطبيق ويزيل disabledAt', async () => {
@@ -294,13 +331,15 @@ describe('الإشعارات: إرسال / سجل / تعديل / حذف / إيص
     await new Promise((r) => setTimeout(r, 5))
     await actions.sendNotice({ body: 'الثاني', targeting: { type: 'all' }, customers: customers() })
     const firstId = h.fake.json<{ id: string }[]>('license', `notices:${DEV}`)![0].id
-    h.fake.seed('license', `noticeread:${DEV2}`, { [firstId]: '2026-10-09T12:00:00Z' })
+    // إقرار البوت: notice-acks:<id> = قائمة أجهزة أقرّت الإشعار
+    h.fake.seed('license', `notice-acks:${firstId}`, [DEV2])
 
     const { notices, readsByDevice } = await actions.listSentNotices()
     expect(notices.map((n) => n.notice.body)).toEqual(['الثاني', 'الأول'])
     expect(notices[1]).toMatchObject({ scope: 'devices', deviceIds: [DEV, DEV2] })
     expect(notices[1].listKeys.sort()).toEqual([`notices:${DEV}`, `notices:${DEV2}`])
-    expect(readsByDevice.get(DEV2)).toEqual({ [firstId]: '2026-10-09T12:00:00Z' })
+    expect(readsByDevice.get(DEV2)).toEqual({ [firstId]: '' })
+    expect(readsByDevice.get(DEV)).toBeUndefined()
   })
 
   it('سجل المرسل مع آلاف المفاتيح: يتبع صفحات cursor ولا يتجاوز 8 طلبات متزامنة', async () => {

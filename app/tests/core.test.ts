@@ -367,6 +367,9 @@ describe('أدوات البوت والإعدادات', () => {
     expect(String(cleaned.note)).toHaveLength(201)
     expect(describeAudit({ action: 'license_issue', target: 'SHOP-X', at: '' })).toContain('إصدار مفتاح')
   })
+  it('سجل قديم بإجراء أُزيل (version_update) يُعرض باسمه الخام ولا ينهار', () => {
+    expect(describeAudit({ action: 'version_update' as never, target: '', at: '' })).toBe('version_update')
+  })
 })
 
 /* ─── مفتاح تغيير النشاط (SHOPSYS2) ─── */

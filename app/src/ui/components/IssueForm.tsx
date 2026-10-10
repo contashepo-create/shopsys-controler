@@ -3,13 +3,13 @@ import { issueLicense, lookupDevice, readGlobalDefaults, sendKeyToCustomer, type
 import { useDataStore } from '../../stores/data.store.ts'
 import {
   DEVICE_ID_RE, generateDeviceId, expiresAfterDays,
-  LICENSE_FEATURES, FEATURE_LABELS_AR, MODULE_LABELS_AR, PLAN_LABELS_AR, PLAN_LIMITS,
+  LICENSE_FEATURES, FEATURE_LABELS_AR, MODULE_LABELS_AR, PLAN_LABELS_AR, PLAN_LIMITS, EXTRA_MODULES,
   type LicensePlan, type LicenseFeature,
 } from '../../core/license.ts'
 import { type CustomerView } from '../../core/customers.ts'
 import { activityDisplay, activityLabel, resolveClientActivity, type ActivitySource } from '../../core/activities.ts'
 import {
-  DERIVED_FEATURES, FALLBACK_DEFAULTS, defaultRenewDays, finalFeatures, splitModules, toCount, totalBranches, totalUsers,
+  DERIVED_FEATURES, FALLBACK_DEFAULTS, defaultRenewDays, daysUntil, durationDays, finalFeatures, finalModules, splitModules, toCount, totalBranches, totalUsers,
   type GlobalDefaults,
 } from '../../core/issueForm.ts'
 import { Btn, Field, Select, useToast } from './ui.tsx'
@@ -55,7 +55,6 @@ export function IssueForm(props: {
   const [extraBranches, setExtraBranches] = useState('')
   const [features, setFeatures] = useState<LicenseFeature[]>([])
   const [modules, setModules] = useState<string[]>([])
-  const [showAllModules, setShowAllModules] = useState(false)
   const [burnPrevious, setBurnPrevious] = useState(false)
 
   const [busy, setBusy] = useState(false)
@@ -130,15 +129,18 @@ export function IssueForm(props: {
   }, [existing, lookupState, defaults, prefilledFor, fixed, nameAuto])
 
   const ownedModules = useMemo(() => existing?.extraModules ?? [], [existing])
-  const split = useMemo(() => splitModules({ activityId, owned: ownedModules, showAll: showAllModules }), [activityId, ownedModules, showAllModules])
+  const split = useMemo(() => splitModules({ activityId, owned: ownedModules }), [activityId, ownedModules])
   const branchesExtra = toCount(extraBranches)
   const usersExtra = toCount(extraUsers)
   const branchesTotal = totalBranches(plan, branchesExtra)
   const signedFeatures = finalFeatures(features, plan, branchesExtra)
-  const signedModules = modules.filter((m) => ownedModules.includes(m) || !split.included.includes(m))
-  const removedModules = ownedModules.filter((m) => !modules.includes(m))
+  /* الافتراضية من النشاط: تظهر مفعّلة دائماً (لا تُسحب)، ولا تُوقَّع إلا إن كانت عنده أصلاً
+     (التطبيق يمنحها من النشاط نفسه — لا يُرسَل للعميل قسم موجود عنده). */
+  const effectiveModules = finalModules([...modules, ...split.included])
+  const signedModules = effectiveModules.filter((m) => ownedModules.includes(m) || !split.included.includes(m))
+  const removedModules = ownedModules.filter((m) => !effectiveModules.includes(m))
   const addedModules = signedModules.filter((m) => !ownedModules.includes(m))
-  const expiry = plan === 'lifetime' ? null : expiresAfterDays(toCount(days) || 365)
+  const expiry = plan === 'lifetime' ? null : expiresAfterDays(durationDays(days))
   const todayIso = new Date().toISOString().slice(0, 10)
   const keepDays = existing?.expiresAt ? defaultRenewDays(existing.expiresAt, todayIso, 0) : 0
   /** «تعدد الفروع» كان عنده وسيُزال لأن الحد الكلي صار فرعاً واحداً */
@@ -172,7 +174,7 @@ export function IssueForm(props: {
         deviceId: normalizedId,
         customer: customerName.trim(),
         plan,
-        days: toCount(days) || 365,
+        days: durationDays(days),
         activityId: activityId || undefined,
         extraUsers: usersExtra,
         extraBranches: branchesExtra,
@@ -264,14 +266,22 @@ export function IssueForm(props: {
             <label>المدة (أيام)</label>
             <input className="input" dir="ltr" value={days} onChange={(e) => setDays(e.target.value)} />
             <div className="row" style={{ gap: 6 }}>
-              {keepDays > 0 ? <Btn size="sm" kind={toCount(days) === keepDays ? 'primary' : 'default'} onClick={() => setDays(String(keepDays))}>إبقاء تاريخه ({existing?.expiresAt})</Btn> : null}
+              {keepDays > 0 ? <Btn size="sm" kind={durationDays(days) === keepDays ? 'primary' : 'default'} onClick={() => setDays(String(keepDays))}>إبقاء تاريخه ({existing?.expiresAt})</Btn> : null}
               {[30, 90, 365].map((d) => (
-                <Btn key={d} size="sm" kind={toCount(days) === d && d !== keepDays ? 'primary' : 'default'} onClick={() => setDays(String(d))}>
+                <Btn key={d} size="sm" kind={durationDays(days) === d && d !== keepDays ? 'primary' : 'default'} onClick={() => setDays(String(d))}>
                   {d === 30 ? 'شهر' : d === 90 ? '3 أشهر' : 'سنة'}
                 </Btn>
               ))}
+              <Btn size="sm" kind={days.trim() === '0' ? 'primary' : 'default'} onClick={() => setDays('0')}>مدى الحياة</Btn>
             </div>
-            <span className="hint">ينتهي في {expiry}{existing?.expiresAt && expiry === existing.expiresAt ? ' — نفس تاريخه الحالي' : ''}</span>
+            <label style={{ marginBlockStart: 6 }}>أو تاريخ انتهاء محدد</label>
+            <input
+              className="input" type="date" dir="ltr" value={expiry ?? ''}
+              onChange={(e) => { const n = daysUntil(todayIso, e.target.value); if (n !== null) setDays(String(n)) }}
+            />
+            <span className="hint">{expiry
+              ? <>ينتهي في {expiry}{existing?.expiresAt && expiry === existing.expiresAt ? ' — نفس تاريخه الحالي' : ''}</>
+              : 'بلا تاريخ انتهاء (مدى الحياة) — الصفر في المدة يعني ذلك'}</span>
           </div>
         )}
         <Field label="فروع إضافية بجانب الفرع الرئيسي" value={extraBranches} onChange={setExtraBranches} dir="ltr" placeholder="0"
@@ -292,45 +302,26 @@ export function IssueForm(props: {
         ))}
       </div>
 
-      {/* 4) الأقسام */}
-      <div className="section-title row" style={{ justifyContent: 'space-between' }}>
-        <span>الأقسام الإضافية</span>
-        <label className="muted" style={{ fontSize: 12, fontWeight: 400, cursor: 'pointer' }}>
-          <input type="checkbox" checked={showAllModules} onChange={() => setShowAllModules(!showAllModules)} /> إظهار كل الأقسام
-        </label>
+      {/* 4) الأقسام: كلها ظاهرة — لا إخفاء. الافتراضية من النشاط مفعّلة ولا تُسحب، وكل قسم قابل للمنح بالمفتاح */}
+      <div className="section-title">الأقسام الإضافية</div>
+      <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 6 }}>
+        ما يحمله نشاط «{activityLabel(activityId)}» افتراضياً مفعّل دائماً (لا يُسحب)، ويُوقَّع مع المفتاح. باقي الأقسام تُمنح بالعلامة.
       </div>
-      {split.included.length ? (
-        <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 8 }}>
-          مضمّنة في نشاط «{activityLabel(activityId)}» ولا تحتاج إضافة: {split.included.map((m) => MODULE_LABELS_AR[m] ?? m).join('، ')}
-        </div>
-      ) : null}
-      {split.owned.length ? (
-        <>
-          <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 6 }}>عنده الآن (تبقى في المفتاح الجديد — أزل العلامة لسحب القسم):</div>
-          <div className="chip-grid" style={{ marginBlockEnd: 10 }}>
-            {split.owned.map((m) => (
-              <label key={m} className={`chip-check${modules.includes(m) ? ' on' : ' off'}`}>
-                <input type="checkbox" checked={modules.includes(m)} onChange={() => toggle(modules, setModules, m)} />
-                <span>{MODULE_LABELS_AR[m] ?? m}</span>
-                {!modules.includes(m) ? <span className="chip-tag danger">سيُسحب</span> : null}
-              </label>
-            ))}
-          </div>
-        </>
-      ) : null}
-      {split.addable.length ? (
-        <>
-          <div className="muted" style={{ fontSize: 12.5, marginBlockEnd: 6 }}>يمكن إضافتها:</div>
-          <div className="chip-grid">
-            {split.addable.map((m) => (
-              <label key={m} className={`chip-check${modules.includes(m) ? ' on' : ''}`}>
-                <input type="checkbox" checked={modules.includes(m)} onChange={() => toggle(modules, setModules, m)} />
-                <span>{MODULE_LABELS_AR[m] ?? m}</span>
-              </label>
-            ))}
-          </div>
-        </>
-      ) : <div className="muted" style={{ fontSize: 12.5 }}>كل الأقسام موجودة عنده بالفعل.</div>}
+      <div className="chip-grid" style={{ marginBlockEnd: 10 }}>
+        {EXTRA_MODULES.map((m) => {
+          const isDefault = split.included.includes(m)
+          const on = effectiveModules.includes(m)
+          const owned = split.owned.includes(m)
+          return (
+            <label key={m} className={`chip-check${on ? ' on' : ' off'}`}>
+              <input type="checkbox" checked={on} disabled={isDefault} onChange={() => toggle(modules, setModules, m)} />
+              <span>{MODULE_LABELS_AR[m] ?? m}</span>
+              {isDefault ? <span className="chip-tag">افتراضي في النشاط</span> : null}
+              {!isDefault && owned && !on ? <span className="chip-tag danger">سيُسحب</span> : null}
+            </label>
+          )
+        })}
+      </div>
 
       {/* 5) ملخص + إصدار */}
       <div className="hr" />
