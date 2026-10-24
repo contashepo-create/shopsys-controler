@@ -48,7 +48,7 @@ export function App() {
   useEffect(() => {
     if (status === 'unlocked') {
       void loadConfig().then(() => refreshData())
-      const stop = useDataStore.getState().startPolling(60_000)
+      const stop = useDataStore.getState().startPolling()
       // طلب إذن الإشعارات مرة واحدة
       if ('Notification' in window && Notification.permission === 'default') {
         void Notification.requestPermission().catch(() => {})

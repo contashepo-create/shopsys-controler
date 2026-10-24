@@ -23,14 +23,24 @@ interface DataState {
   unreadNew: number
   /** آخر تسجيلات اعتُبرت جديدة — للتنبيه الصوتي/النظام */
   lastNewIds: string[]
+  /** تحديث كامل لكل البيانات (عند الفتح الأول أو الضغط اليدوي أو إصدار رخصة) */
   refresh(): Promise<void>
+  /**
+   * فحص تفاضلي خفيف لبادئة reg: فقط (طلب listKeys واحد + صفر GET عند السكون)
+   * لحماية الحصة المجانية اليومية في Cloudflare KV.
+   * @param ifStaleMs إن مُرّر، يتخطى الفحص إن كان آخر فحص أحدث من هذه المدة (مللي ثانية).
+   */
+  pollRegistrations(ifStaleMs?: number): Promise<void>
   /** تصفير عدّاد الجديد عند فتح صفحة التسجيلات */
   markRegistrationsSeen(): void
-  /** بدء التحديث التلقائي كل N ثانية */
+  /** بدء الفحص الدوري الخفيف للتسجيلات الجديدة */
   startPolling(intervalMs?: number): () => void
 }
 
-const POLL_DEFAULT_MS = 60_000
+/** دقيقتان افتراضياً: 30 عملية list/ساعة فقط (~240 في 8 ساعات عمل من أصل 1000 مجانية يومياً) */
+export const POLL_DEFAULT_MS = 120_000
+/** تهدئة عند عودة التركيز للنافذة لمنع استنزاف الطلبات مع Alt+Tab */
+export const FOCUS_COOLDOWN_MS = 60_000
 
 /** سقف أمان لكل بادئة (يُنبَّه عند بلوغه بدل القصّ الصامت) */
 export const MAX_KEYS_PER_PREFIX = 5000
@@ -67,21 +77,33 @@ async function listAll(ns: 'license' | 'services', prefix: string): Promise<List
   return { keys: all.slice(0, MAX_KEYS_PER_PREFIX), truncated: Boolean(cursor) || all.length > MAX_KEYS_PER_PREFIX }
 }
 
-/** ذاكرة خارج المتجر لتتبع الجديد بين التحديثات */
+/** ذاكرة خارج المتجر لتتبع الجديد وتجنب إعادة قراءة سجلات reg: المعروفة في كل دورة */
 let seenRegIds = new Set<string>()
 let notifiedIds = new Set<string>()
+let knownRegCache = new Map<string, RegistrationRecord | null>()
+let licensedDeviceIds = new Set<string>()
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 let initialLoadDone = false
+let lastCheckAt = 0
 
 /** للاختبارات فقط — إعادة ضبط الحالة */
 export function __resetRegistrationsState() {
   seenRegIds = new Set()
   notifiedIds = new Set()
+  knownRegCache = new Map()
+  licensedDeviceIds = new Set()
   initialLoadDone = false
+  lastCheckAt = 0
+  pollInflight = null
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
   try { localStorage.removeItem('controler:seenRegIds') } catch { /* ignore */ }
 }
 
 function playNewRegistrationSound() {
+  if (typeof window === 'undefined') return
   try {
     const Ctx = (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
       ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
@@ -96,9 +118,92 @@ function playNewRegistrationSound() {
     g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02)
     g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35)
     o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.36)
-    // تنظيف بعد الانتهاء
     setTimeout(() => { try { ctx.close() } catch { /* ignore */ } }, 800)
   } catch { /* الصوت أفضل جهد — لا يُسقط التنبيه */ }
+}
+
+function readStoredSeenIds(): string[] | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    const stored = localStorage.getItem('controler:seenRegIds')
+    if (stored === null) return null
+    const parsed = JSON.parse(stored) as unknown
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredSeenIds(ids: readonly string[]) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('controler:seenRegIds', JSON.stringify(ids))
+    }
+  } catch { /* ignore */ }
+}
+
+function computeRegistrationAlerts(
+  registrations: RegistrationRecord[],
+  hasLicense: (deviceId: string) => boolean,
+): { pendingRegistrations: RegistrationRecord[]; unreadNew: number; lastNewIds: string[] } {
+  const pendingRegistrations = registrations.filter((r) => !hasLicense(r.deviceId))
+
+  const firstLoad = !initialLoadDone
+  let hadStored = false
+  if (firstLoad) {
+    const storedIds = readStoredSeenIds()
+    if (storedIds !== null) {
+      seenRegIds = new Set(storedIds)
+      for (const id of storedIds) notifiedIds.add(id)
+      hadStored = true
+    } else {
+      const ids = registrations.map((r) => r.deviceId)
+      seenRegIds = new Set(ids)
+      for (const id of ids) notifiedIds.add(id)
+      writeStoredSeenIds(ids)
+      hadStored = false
+    }
+  }
+
+  const unseenPendingIds = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).map((r) => r.deviceId)
+  const unreadNew = unseenPendingIds.length
+  const notifyCandidates = pendingRegistrations.filter((r) => !notifiedIds.has(r.deviceId)).map((r) => r.deviceId)
+  const shouldNotify = notifyCandidates.length > 0 && (!firstLoad || hadStored)
+
+  if (notifyCandidates.length && shouldNotify) {
+    try {
+      const first = pendingRegistrations.find((r) => notifyCandidates.includes(r.deviceId))
+      const title = `🆕 تسجيل عميل جديد${notifyCandidates.length > 1 ? ` (+${notifyCandidates.length - 1})` : ''}`
+      const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${notifyCandidates.length} عميل جديد`
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        if (Notification.permission === 'granted') {
+          new Notification(title, { body })
+        } else if (Notification.permission !== 'denied') {
+          void Notification.requestPermission().then((perm) => {
+            if (perm === 'granted') new Notification(title, { body })
+          })
+        }
+      }
+      try { void bridge.app.notify(title, body) } catch { /* أفضل جهد */ }
+      if (typeof window !== 'undefined') {
+        const w = window as unknown as { controlerDesktop?: Record<string, unknown> }
+        const legacy = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
+        if (typeof legacy === 'function') void legacy({ title, body }).catch(() => {})
+      }
+      playNewRegistrationSound()
+      try {
+        const tgText = `🆕 تسجيل عميل جديد (${notifyCandidates.length})\n${pendingRegistrations.filter((r) => notifyCandidates.includes(r.deviceId)).map((r) => `• ${r.shopName || 'بلا اسم'} — ${r.ownerName || ''} — ${r.phone || r.email || r.deviceId}\n  ${r.city ? `${r.city} — ` : ''}${r.activityNameAr || r.activityId || ''}`).join('\n')}`
+        void bridge.tg.send(tgText).catch(() => {})
+      } catch { /* ignore */ }
+      for (const id of notifyCandidates) notifiedIds.add(id)
+    } catch { /* best effort */ }
+  } else if (notifyCandidates.length && firstLoad && !hadStored) {
+    for (const id of notifyCandidates) notifiedIds.add(id)
+  }
+
+  if (firstLoad) initialLoadDone = true
+  const lastNewIds = unseenPendingIds.filter((id) => notifiedIds.has(id))
+  return { pendingRegistrations, unreadNew, lastNewIds }
 }
 
 export const useDataStore = create<DataState>((set, get) => ({
@@ -119,7 +224,7 @@ export const useDataStore = create<DataState>((set, get) => ({
     const ids = get().registrations.map((r) => r.deviceId)
     seenRegIds = new Set(ids)
     for (const id of ids) notifiedIds.add(id)
-    try { localStorage.setItem('controler:seenRegIds', JSON.stringify(ids)) } catch { /* ignore */ }
+    writeStoredSeenIds(ids)
     set({ unreadNew: 0, lastNewIds: [] })
   },
 
@@ -132,14 +237,30 @@ export const useDataStore = create<DataState>((set, get) => ({
     return inflight
   },
 
+  pollRegistrations: (ifStaleMs = 0) => {
+    if (ifStaleMs > 0 && initialLoadDone && Date.now() - lastCheckAt < ifStaleMs) {
+      return Promise.resolve()
+    }
+    if (!initialLoadDone) {
+      return get().refresh()
+    }
+    if (inflight) return inflight
+    if (pollInflight) return pollInflight
+    pollInflight = runPollRegistrations(set, get).finally(() => { pollInflight = null })
+    return pollInflight
+  },
+
   startPolling: (intervalMs = POLL_DEFAULT_MS) => {
     if (pollingTimer) clearInterval(pollingTimer)
     pollingTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return
-      void get().refresh()
+      void get().pollRegistrations()
     }, intervalMs)
-    // تحديث فوري عند عودة التركيز
-    const onFocus = () => void get().refresh()
+    // فحص خفيف عند عودة التركيز مع تهدئة (Cooldown) لحماية الحصة المجانية
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      void get().pollRegistrations(FOCUS_COOLDOWN_MS)
+    }
     if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
     return () => {
       if (pollingTimer) clearInterval(pollingTimer)
@@ -151,19 +272,77 @@ export const useDataStore = create<DataState>((set, get) => ({
 
 let inflight: Promise<void> | null = null
 let queued: Promise<void> | null = null
+let pollInflight: Promise<void> | null = null
 
 type SetState = (partial: Partial<DataState>) => void
+
+async function runPollRegistrations(set: SetState, get: () => DataState): Promise<void> {
+  try {
+    const regListed = await listAll('license', 'reg:')
+    lastCheckAt = Date.now()
+
+    const currentKeys = new Set(regListed.keys)
+    let deletedAny = false
+    for (const cachedKey of knownRegCache.keys()) {
+      if (!currentKeys.has(cachedKey)) {
+        knownRegCache.delete(cachedKey)
+        deletedAny = true
+      }
+    }
+
+    const missingKeys = regListed.keys.filter((k) => !knownRegCache.has(k))
+    if (missingKeys.length === 0 && !deletedAny) {
+      return
+    }
+
+    if (missingKeys.length > 0) {
+      const newEntries = await getAllValues('license', missingKeys)
+      const newDeviceIds: string[] = []
+      for (const [k, raw] of newEntries) {
+        const rec = parseRegistrationRecord(raw)
+        knownRegCache.set(k, rec)
+        if (rec) newDeviceIds.push(rec.deviceId)
+      }
+      if (newDeviceIds.length > 0) {
+        const devEntries = await getAllValues('license', newDeviceIds.map((id) => `dev:${id}`))
+        for (const [k, raw] of devEntries) {
+          const id = k.slice('dev:'.length)
+          const devRec = parseDevRecord(raw)
+          if (devRec && String(devRec.plan ?? '').trim()) licensedDeviceIds.add(id)
+          else licensedDeviceIds.delete(id)
+        }
+      }
+    }
+
+    const registrations: RegistrationRecord[] = []
+    for (const rec of knownRegCache.values()) {
+      if (rec) registrations.push(rec)
+    }
+    registrations.sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)))
+
+    const customerLicensed = new Set(
+      get().customers.filter((c) => Boolean(String(c.plan ?? '').trim())).map((c) => c.deviceId),
+    )
+    const hasLicense = (deviceId: string) => licensedDeviceIds.has(deviceId) || customerLicensed.has(deviceId)
+    const { pendingRegistrations, unreadNew, lastNewIds } = computeRegistrationAlerts(registrations, hasLicense)
+
+    set({ registrations, pendingRegistrations, unreadNew, lastNewIds })
+  } catch {
+    // الفحص الدوري في الخلفية لا يُسقط البيانات الحالية عند خطأ شبكة عابر
+  }
+}
+
 async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
   set({ loading: true, error: null })
 
   try {
-    const [devList, logList, emailList, revokedRaw, chatListed, regList] = await Promise.all([
+    const [devList, logList, emailList, revokedRaw, chatListed, regListed] = await Promise.all([
       listAll('license', 'dev:'),
       listAll('license', 'log:'),
       listAll('license', 'email:'),
       bridge.cf.get('license', 'revoked'),
       listAll('services', 'chat:').then((list) => ({ list }), (e: unknown) => ({ error: e })),
-      listAll('license', 'reg:').then((list) => ({ list }), () => ({ list: { keys: [] as string[], truncated: false } })),
+      listAll('license', 'reg:').then((list) => ({ ok: true as const, list }), () => ({ ok: false as const })),
     ])
     if (!revokedRaw.ok) throw Object.assign(new Error(`تعذر قراءة قائمة الحرق: ${revokedRaw.error ?? ''}`), { code: revokedRaw.code })
 
@@ -191,20 +370,22 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
     let registrations: RegistrationRecord[] = []
     let regTruncated = false
     try {
-      const list = (regList as { list: Listing }).list
-      if (list) {
-        regTruncated = list.truncated
-        if (list.keys.length) {
-          const regEntries = await getAllValues('license', list.keys)
-          for (const [, raw] of regEntries) {
-            const rec = parseRegistrationRecord(raw)
-            if (rec) registrations.push(rec)
-          }
-          registrations.sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)))
+      if (!regListed.ok) throw new Error('reg_list_failed')
+      const list = regListed.list
+      regTruncated = list.truncated
+      const nextRegCache = new Map<string, RegistrationRecord | null>()
+      if (list.keys.length) {
+        const regEntries = await getAllValues('license', list.keys)
+        for (const [k, raw] of regEntries) {
+          const rec = parseRegistrationRecord(raw)
+          nextRegCache.set(k, rec)
+          if (rec) registrations.push(rec)
         }
+        registrations.sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)))
       }
+      knownRegCache = nextRegCache
     } catch {
-      // تسجيلات اختيارية — لا تُسقط التحديث
+      // تسجيلات اختيارية — لا تُسقط التحديث وتحافظ على النسخة السابقة
       registrations = get().registrations
     }
 
@@ -243,78 +424,15 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
 
     // حساب المعلّق (بدون رخصة): سجل dev بخطة فارغة
     const devById = new Map<string, ReturnType<typeof parseDevRecord>>()
-    for (const [k, v] of strip('dev:')(devEntries)) devById.set(k, parseDevRecord(v))
-    const hasLicense = (deviceId: string) => {
-      const rec = devById.get(deviceId)
-      return Boolean(rec && String(rec.plan ?? '').trim())
+    const nextLicensed = new Set<string>()
+    for (const [k, v] of strip('dev:')(devEntries)) {
+      const parsed = parseDevRecord(v)
+      devById.set(k, parsed)
+      if (parsed && String(parsed.plan ?? '').trim()) nextLicensed.add(k)
     }
-    const pendingRegistrations = registrations.filter((r) => !hasLicense(r.deviceId))
-
-    // كشف الجديد: مقارنة مع ما رُئي من قبل (من الذاكرة أو التخزين المحلي)
-    const firstLoad = !initialLoadDone
-    let hadStored = false
-    if (firstLoad) {
-      try {
-        const stored = localStorage.getItem('controler:seenRegIds')
-        if (stored) {
-          const parsed = JSON.parse(stored) as string[]
-          seenRegIds = new Set(parsed)
-          for (const id of parsed) notifiedIds.add(id)
-          hadStored = parsed.length > 0
-        } else if (registrations.length) {
-          const ids = registrations.map((r) => r.deviceId)
-          seenRegIds = new Set(ids)
-          for (const id of ids) notifiedIds.add(id)
-          hadStored = false
-        }
-      } catch { /* ignore */ }
-    }
-    // الحساب الموثوق للبادج: كل معلّق لم يُرَ
-    const unreadNew = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).length
-    // للتنبيه: فقط من لم نُنبّه عنه من قبل (حتى لا نكرر كل دقيقة لنفس العميل)
-    const notifyCandidates = pendingRegistrations.filter((r) => !notifiedIds.has(r.deviceId)).map((r) => r.deviceId)
-    // يُسمح بالتنبيه في أول تحميل فقط إن كان هناك سجل محفوظ سابقاً وجاء جديد أثناء الإغلاق
-    const shouldNotify = notifyCandidates.length > 0 && seenRegIds.size > 0 && (!firstLoad || hadStored)
-    let lastNewIds: string[] = get().lastNewIds
-    if (notifyCandidates.length && shouldNotify) {
-      try {
-        const first = pendingRegistrations.find((r) => notifyCandidates.includes(r.deviceId))
-        const title = `🆕 تسجيل عميل جديد${notifyCandidates.length > 1 ? ` (+${notifyCandidates.length - 1})` : ''}`
-        const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${notifyCandidates.length} عميل جديد`
-        // 1) تنبيه المتصفح
-        if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification(title, { body })
-        } else if ('Notification' in window && Notification.permission !== 'denied') {
-          void Notification.requestPermission().then((perm) => {
-            if (perm === 'granted') new Notification(title, { body })
-          })
-        }
-        // 2) تنبيه نظام ويندوز عبر Electron
-        try { void bridge.app.notify(title, body) } catch { /* أفضل جهد */ }
-        const w = window as unknown as { controlerDesktop?: Record<string, unknown> }
-        const legacy = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
-        if (typeof legacy === 'function') void legacy({ title, body }).catch(() => {})
-        // 3) صوت تنبيه داخل اللوحة
-        playNewRegistrationSound()
-        // 4) تيليجرام للمطور (أفضل جهد — لا يُسقط التحديث)
-        try {
-          const tgText = `🆕 تسجيل عميل جديد (${notifyCandidates.length})\n${pendingRegistrations.filter(r=>notifyCandidates.includes(r.deviceId)).map(r=> `• ${r.shopName||'بلا اسم'} — ${r.ownerName||''} — ${r.phone||r.email||r.deviceId}\n  ${r.city ? `${r.city} — ` : ''}${r.activityNameAr||r.activityId||''}`).join('\n')}`
-          void bridge.tg.send(tgText).catch(() => {})
-        } catch { /* ignore */ }
-        lastNewIds = notifyCandidates
-        for (const id of notifyCandidates) notifiedIds.add(id)
-      } catch { /* best effort */ }
-    } else if (notifyCandidates.length && firstLoad && !hadStored) {
-      // تثبيت أول مرّة بلا سجل محفوظ: لا تنبيه لكن نحفظ كـ "مُنبَّه" حتى لا يزعج لاحقاً
-      lastNewIds = []
-      for (const id of notifyCandidates) notifiedIds.add(id)
-    } else if (pendingRegistrations.length === 0) {
-      lastNewIds = []
-    } else if (notifyCandidates.length === 0 && lastNewIds.length > 0) {
-      // لا جديد لكن آخر تنبيه ما زال يظهر — يُصفّى فقط عند markSeen أو عند انتهاء pending
-      // (نُبقيه ظاهراً حتى يفتح المستخدم الصفحة)
-    }
-    if (firstLoad) initialLoadDone = true
+    licensedDeviceIds = nextLicensed
+    const hasLicense = (deviceId: string) => nextLicensed.has(deviceId)
+    const { pendingRegistrations, unreadNew, lastNewIds } = computeRegistrationAlerts(registrations, hasLicense)
 
     const truncated = [
       devList.truncated && 'الأجهزة (dev:)',
@@ -327,6 +445,7 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
       ? `تجاوز العدد ${MAX_KEYS_PER_PREFIX} في: ${truncated.join('، ')} — بعض السجلات لم تُعرض`
       : null
 
+    lastCheckAt = Date.now()
     const at = new Date().toISOString()
     set({ customers, registrations, pendingRegistrations, chatOnly, warning, loading: false, lastSyncAt: at, servicesAvailable, servicesError, unreadNew, lastNewIds })
     try {

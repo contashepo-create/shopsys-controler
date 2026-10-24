@@ -10,14 +10,17 @@ const fmtDate = (iso: string) => iso ? iso.slice(0, 16).replace('T', ' ') : '—
 
 export function RegistrationsPage() {
   const toast = useToast()
-  const { registrations, pendingRegistrations, refresh, loading, unreadNew, markRegistrationsSeen } = useDataStore()
+  const { registrations, pendingRegistrations, refresh, pollRegistrations, loading, unreadNew, markRegistrationsSeen } = useDataStore()
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<'all' | 'new' | 'licensed'>('all')
   const [selected, setSelected] = useState<RegistrationRecord | null>(null)
   const [issueFor, setIssueFor] = useState<RegistrationRecord | null>(null)
   const [deleteFor, setDeleteFor] = useState<RegistrationRecord | null>(null)
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (!useDataStore.getState().lastSyncAt) void refresh()
+    else void pollRegistrations(30_000)
+  }, [refresh, pollRegistrations])
   useEffect(() => {
     // عند فتح الصفحة نعلّم التسجيلات كمقروءة بعد ثانيتين (حتى يراها المستخدم)
     const t = setTimeout(() => markRegistrationsSeen(), 1200)
