@@ -16,7 +16,6 @@ export function RegistrationsPage() {
   const [selected, setSelected] = useState<RegistrationRecord | null>(null)
   const [issueFor, setIssueFor] = useState<RegistrationRecord | null>(null)
   const [deleteFor, setDeleteFor] = useState<RegistrationRecord | null>(null)
-  const [busy, setBusy] = useState(false)
 
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => {
@@ -53,7 +52,6 @@ export function RegistrationsPage() {
 
   async function doDelete() {
     if (!deleteFor) return
-    setBusy(true)
     try {
       const res = await bridge.cf.delete('license', `reg:${deleteFor.deviceId}`)
       if (!res.ok) throw new Error(res.error ?? 'تعذر الحذف')
@@ -61,7 +59,6 @@ export function RegistrationsPage() {
       setDeleteFor(null)
       await refresh()
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
-    setBusy(false)
   }
 
   return (
@@ -111,8 +108,9 @@ export function RegistrationsPage() {
       {filtered.length === 0 ? (
         <div className="card"><EmptyState icon="📋" text={q ? 'لا نتائج للبحث' : filter === 'new' ? 'لا يوجد عملاء جدد حالياً' : 'لا تسجيلات بعد'} hint={q ? 'جرّب كلمة أخرى' : 'يظهر هنا كل عميل يثبّت التطبيق ويكمل التسجيل — تلقائياً'} /></div>
       ) : (
-        <div className="grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 12 }}>
-          {filtered.map((r) => {
+        <>
+          <div className="grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 12 }}>
+            {filtered.slice(0, 200).map((r) => {
             const licensed = devLicensed.get(r.deviceId) ?? false
             const isNew = !licensed
             return (
@@ -151,8 +149,10 @@ export function RegistrationsPage() {
                 </div>
               </div>
             )
-          })}
-        </div>
+            })}
+          </div>
+          {filtered.length > 200 ? <div className="muted" style={{ textAlign: 'center', marginBlockStart: 8 }}>عرض 200 من {filtered.length} — استخدم البحث للتصفية</div> : null}
+        </>
       )}
 
       {selected ? <RegistrationDetailModal record={selected} licensed={devLicensed.get(selected.deviceId) ?? false} onClose={() => setSelected(null)} onIssue={() => { setSelected(null); setIssueFor(selected) }} /> : null}

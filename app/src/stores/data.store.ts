@@ -69,8 +69,16 @@ async function listAll(ns: 'license' | 'services', prefix: string): Promise<List
 
 /** ذاكرة خارج المتجر لتتبع الجديد بين التحديثات */
 let seenRegIds = new Set<string>()
+let notifiedIds = new Set<string>()
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 let initialLoadDone = false
+
+/** للاختبارات فقط — إعادة ضبط الحالة */
+export function __resetRegistrationsState() {
+  seenRegIds = new Set()
+  notifiedIds = new Set()
+  initialLoadDone = false
+}
 
 export const useDataStore = create<DataState>((set, get) => ({
   customers: [],
@@ -87,9 +95,9 @@ export const useDataStore = create<DataState>((set, get) => ({
   lastNewIds: [],
 
   markRegistrationsSeen: () => {
-    // نحفظ كل المعرفات الحالية كـ "مقروءة" ونصفّر العدّاد
     const ids = get().registrations.map((r) => r.deviceId)
     seenRegIds = new Set(ids)
+    for (const id of ids) notifiedIds.add(id)
     try { localStorage.setItem('controler:seenRegIds', JSON.stringify(ids)) } catch { /* ignore */ }
     set({ unreadNew: 0, lastNewIds: [] })
   },
@@ -222,23 +230,32 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
     const pendingRegistrations = registrations.filter((r) => !hasLicense(r.deviceId))
 
     // كشف الجديد: مقارنة مع ما رُئي من قبل (من الذاكرة أو التخزين المحلي)
-    if (!initialLoadDone) {
+    const firstLoad = !initialLoadDone
+    if (firstLoad) {
       try {
         const stored = localStorage.getItem('controler:seenRegIds')
-        if (stored) seenRegIds = new Set(JSON.parse(stored) as string[])
-        else if (registrations.length) seenRegIds = new Set(registrations.map((r) => r.deviceId))
+        if (stored) {
+          const parsed = JSON.parse(stored) as string[]
+          seenRegIds = new Set(parsed)
+          for (const id of parsed) notifiedIds.add(id)
+        } else if (registrations.length) {
+          const ids = registrations.map((r) => r.deviceId)
+          seenRegIds = new Set(ids)
+          for (const id of ids) notifiedIds.add(id)
+        }
       } catch { /* ignore */ }
-      initialLoadDone = true
     }
-    const newIds = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).map((r) => r.deviceId)
-    const shouldNotify = initialLoadDone && seenRegIds.size > 0 && newIds.length > 0
+    // الحساب الموثوق للبادج: كل معلّق لم يُرَ
     const unreadNew = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).length
+    // للتنبيه: فقط من لم نُنبّه عنه من قبل (حتى لا نكرر كل دقيقة لنفس العميل)
+    const notifyCandidates = pendingRegistrations.filter((r) => !notifiedIds.has(r.deviceId)).map((r) => r.deviceId)
+    const shouldNotify = !firstLoad && seenRegIds.size > 0 && notifyCandidates.length > 0
     let lastNewIds: string[] = get().lastNewIds
-    if (newIds.length && shouldNotify) {
+    if (notifyCandidates.length && shouldNotify) {
       try {
-        const first = pendingRegistrations.find((r) => newIds.includes(r.deviceId))
-        const title = `🆕 تسجيل عميل جديد${newIds.length > 1 ? ` (+${newIds.length - 1})` : ''}`
-        const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${newIds.length} عميل جديد`
+        const first = pendingRegistrations.find((r) => notifyCandidates.includes(r.deviceId))
+        const title = `🆕 تسجيل عميل جديد${notifyCandidates.length > 1 ? ` (+${notifyCandidates.length - 1})` : ''}`
+        const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${notifyCandidates.length} عميل جديد`
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification(title, { body })
         } else if ('Notification' in window && Notification.permission !== 'denied') {
@@ -249,18 +266,17 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
         const w = window as unknown as { controlerDesktop?: Record<string, unknown> }
         const notify = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
         if (typeof notify === 'function') void notify({ title, body }).catch(() => {})
-        // صوت تنبيه (إن وجد)
-        try {
-          const audio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAIA')
-          void audio.play().catch(() => {})
-        } catch { /* ignore */ }
-        lastNewIds = newIds
+        lastNewIds = notifyCandidates
+        for (const id of notifyCandidates) notifiedIds.add(id)
       } catch { /* best effort */ }
-    } else if (newIds.length) {
-      lastNewIds = newIds
+    } else if (notifyCandidates.length && firstLoad) {
+      // أول تحميل بعد التثبيت: لا تنبيه لكن نحفظ كـ "مُنبَّه" حتى لا يزعج لاحقاً
+      lastNewIds = notifyCandidates
+      for (const id of notifyCandidates) notifiedIds.add(id)
     } else if (pendingRegistrations.length === 0) {
       lastNewIds = []
     }
+    if (firstLoad) initialLoadDone = true
 
     const truncated = [
       devList.truncated && 'الأجهزة (dev:)',
