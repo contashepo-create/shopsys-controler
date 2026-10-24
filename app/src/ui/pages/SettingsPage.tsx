@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { bridge, isDesktop, type DataInfo } from '../../data/bridge.ts'
 import { useConfigStore } from '../../stores/config.store.ts'
+import { useDataStore, resetRegistrationBaseline } from '../../stores/data.store.ts'
 import { useSessionStore } from '../../stores/session.store.ts'
 import { maskToken, isValidBotToken, isValidChatId, buildTestMessage } from '../../core/telegramAdmin.ts'
 import {
@@ -134,6 +135,7 @@ export function SettingsPage() {
     if (accountId && !isValidCfAccountId(accountId)) { toast('Account ID يجب أن يكون 32 حرفاً hex', 'error'); return }
     if (nsLicense && !isValidCfNamespaceId(nsLicense)) { toast('namespace الترخيص يجب أن يكون 32 حرفاً hex', 'error'); return }
     if (nsServices && !isValidCfNamespaceId(nsServices)) { toast('namespace الخدمات يجب أن يكون 32 حرفاً hex', 'error'); return }
+    const licenseChanged = nsLicense.trim() !== cfNsLicense.trim() || accountId.trim() !== cfAccountId.trim()
     setBusy(true)
     try {
       await saveSecrets({
@@ -143,7 +145,9 @@ export function SettingsPage() {
       await audit('cf_settings_update', undefined, { accountId: accountId.trim() })
       toast('تم حفظ إعدادات Cloudflare ✓', 'ok')
       setCfToken('')
+      if (licenseChanged) resetRegistrationBaseline()
       void checkKv()
+      void useDataStore.getState().refresh()
     } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
     setBusy(false)
   }

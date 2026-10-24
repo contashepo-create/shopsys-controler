@@ -96,10 +96,10 @@ export function IssueForm(props: {
     if (!defaults) return
     const today = new Date().toISOString().slice(0, 10)
     if (existing) {
-      const tag = `c:${existing.deviceId}:${existing.fingerprint ?? ''}`
+      const tag = `c:${existing.deviceId}:${existing.fingerprint ?? ''}:${existing.plan}:${existing.clientActivityId ?? ''}:${existing.customer}`
       if (prefilledFor === tag) return
       setPrefilledFor(tag)
-      if (existing.customer) { setCustomerName(existing.customer); setNameAuto(true) }
+      if (existing.customer && nameAuto) { setCustomerName(existing.customer); setNameAuto(true) }
       const act = resolveClientActivity(existing)
       setActivityId(act.id); setActivitySource(act.source); setActivityCustom(false)
       const validPlan = (['trial', 'basic', 'pro', 'lifetime'] as const).includes(existing.plan as LicensePlan)
@@ -247,12 +247,12 @@ export function IssueForm(props: {
             {!deviceValid ? 'يظهر للعميل في شاشة التفعيل داخل التطبيق'
               : lookupState === 'loading' ? '… جارٍ البحث عن الجهاز'
               : lookupState === 'error' ? <span style={{ color: 'var(--danger)' }}>⚠️ تعذر التحقق من الجهاز — {lookupError} <button type="button" className="btn btn-sm btn-ghost" onClick={() => { setLookupState('loading'); setLookupNonce((n) => n + 1) }}>إعادة المحاولة</button></span>
-              : existing ? `✓ عميل مسجَّل — ${existing.customer || 'بلا اسم'} · ${PLAN_LABELS_AR[existing.plan as LicensePlan] ?? existing.plan ?? 'بلا باقة'}${existing.expiresAt ? ` حتى ${existing.expiresAt}` : ''}`
+              : existing ? `✓ عميل مسجَّل — ${existing.customer || 'بلا اسم'} · ${PLAN_LABELS_AR[existing.plan as LicensePlan] ?? (existing.plan || 'بلا باقة')}${existing.expiresAt ? ` حتى ${existing.expiresAt}` : ''}`
               : defaultsFailed ? '⚠️ جهاز جديد — تعذر قراءة الافتراضيات المحفوظة فعُبّئ بقيم آمنة؛ راجع الباقة والميزات'
               : '✓ جهاز جديد — عُبّئ النموذج من الافتراضيات'}
           </span>
         </div>
-        <Field label="اسم العميل *" value={customerName} onChange={(v) => { setCustomerName(v); setNameAuto(false) }}
+        <Field label="اسم العميل *" value={customerName} onChange={(v) => { setCustomerName(v); setNameAuto(v.trim() === '') }}
           placeholder="بقالة النور — المنصورة"
           hint={existing?.customer && customerName === existing.customer ? '✓ كُتب تلقائياً من بيانات الجهاز' : undefined} />
       </div>

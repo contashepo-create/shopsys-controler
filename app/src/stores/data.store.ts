@@ -89,6 +89,17 @@ let initialLoadDone = false
 let lastCheckAt = 0
 let refreshEpoch = 0
 
+/** عند تغيير مساحة التراخيص في الإعدادات نعيد بناء خط الأساس دون تنبيهات زائفة على العملاء القدامى */
+export function resetRegistrationBaseline() {
+  knownRegCache = new Map()
+  licensedDeviceIds = new Set()
+  devBackedIds = new Set()
+  notifiedIds = new Set()
+  initialLoadDone = false
+  lastCheckAt = 0
+  refreshEpoch++
+}
+
 /** للاختبارات فقط — إعادة ضبط الحالة */
 export function __resetRegistrationsState() {
   seenRegIds = new Set()

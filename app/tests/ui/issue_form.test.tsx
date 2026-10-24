@@ -381,6 +381,7 @@ describe('عميل جديد مسجَّل بلا رخصة سابقة (status=none
     })
     renderForm({ customer: freshReg })
     await waitFor(() => expect(selectOf('الباقة').value).toBe('pro'))
+    expect(screen.getByText(/عميل مسجَّل — سوبر ماركت الهدى · بلا باقة/)).toBeTruthy()
     expect(inputOf('اسم العميل *').value).toBe('سوبر ماركت الهدى')
     expect(selectOf('النشاط').value).toBe('grocery')
     expect(inputOf('المدة (أيام)').value).toBe('90')

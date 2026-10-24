@@ -21,6 +21,7 @@ import { sanitizeDetails, type AuditAction } from '../core/audit.ts'
 import { describeTargeting } from '../core/notices.ts'
 import { chatMetadata, deviceMetadata } from '../core/kvMetadata.ts'
 import { mapLimit } from '../core/concurrency.ts'
+import { parseRegistrationRecord } from '../core/registrations.ts'
 
 export interface IssueLicenseInput {
   deviceId: string
@@ -448,8 +449,36 @@ export { canonicalPayload }
  */
 export async function lookupDevice(deviceId: string): Promise<CustomerView | null> {
   // فشل القراءة يرمي (لا يُعامل كجهاز جديد) — وإلا عُبّئ النموذج بالافتراضيات وسُحبت من العميل أقسامه وميزاته
-  const devRaw = await readForUpdate('license', `dev:${deviceId}`)
-  if (!devRaw) return null
+  const [devRaw, regRaw] = await Promise.all([
+    readForUpdate('license', `dev:${deviceId}`),
+    readForUpdate('license', `reg:${deviceId}`),
+  ])
+  const reg = parseRegistrationRecord(regRaw, deviceId)
+  if (!devRaw) {
+    if (!reg) return null
+    return {
+      deviceId,
+      customer: reg.shopName || reg.ownerName,
+      email: reg.email || null,
+      plan: '',
+      expiresAt: null,
+      activityId: null,
+      clientActivityId: reg.activityId ?? null,
+      features: [],
+      extraUsers: 0,
+      extraBranches: 0,
+      extraModules: [],
+      fingerprint: null,
+      licenseKey: null,
+      licenseIssuedAt: null,
+      lastSeenAt: reg.lastSeenAt || reg.registeredAt || reg.firstSeenAt || null,
+      status: 'none',
+      lastActivityAt: null,
+      lastSupportAt: null,
+      supportUnread: false,
+      message: '',
+    }
+  }
   let fingerprint: string | undefined
   try {
     const fp = (JSON.parse(devRaw) as { fingerprint?: unknown }).fingerprint
@@ -468,7 +497,19 @@ export async function lookupDevice(deviceId: string): Promise<CustomerView | nul
     revoked: Array.isArray(revoked) ? revoked.filter((x): x is string => typeof x === 'string') : [],
     todayIso: new Date().toISOString().slice(0, 10),
   })
-  return views[0] ?? null
+  const view = views[0] ?? null
+  if (!view || !reg) return view
+  const regLastSeen = reg.lastSeenAt || reg.registeredAt || reg.firstSeenAt || null
+  const bestLastSeen = view.lastSeenAt && regLastSeen
+    ? (regLastSeen > view.lastSeenAt ? regLastSeen : view.lastSeenAt)
+    : (view.lastSeenAt ?? regLastSeen)
+  return {
+    ...view,
+    customer: view.customer || reg.shopName || reg.ownerName,
+    email: view.email || reg.email || null,
+    clientActivityId: view.clientActivityId ?? reg.activityId ?? null,
+    lastSeenAt: bestLastSeen,
+  }
 }
 
 /** settings:global — افتراضيات الرخص الجديدة (نفس شكل البوت). */
