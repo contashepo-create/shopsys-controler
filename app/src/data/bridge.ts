@@ -169,6 +169,7 @@ export interface ControlerBridge {
     dataInfo(): Promise<DataInfo>
     openDataFolder(): Promise<{ ok: boolean; error?: string }>
     snapshotData(): Promise<{ created: boolean; at?: string; error?: string }>
+    notify(title: string, body: string): Promise<void>
   }
   setup: { isComplete(): Promise<{ hasProfile: boolean; hasPassword: boolean }> }
   profile: { get(): Promise<DeveloperProfile | null>; save(p: DeveloperProfile): Promise<void> }
@@ -235,6 +236,7 @@ function webBridge(): ControlerBridge {
       dataInfo: async () => ({ path: '—', backupsPath: '—', backups: 0, lastBackupAt: null }),
       openDataFolder: async () => notDesktop(),
       snapshotData: async () => notDesktop(),
+      notify: async () => {},
     },
     setup: {
       isComplete: async () => ({
@@ -308,6 +310,7 @@ function desktopBridge(): ControlerBridge | null {
       dataInfo: () => invoke('app:dataInfo'),
       openDataFolder: () => invoke('app:openDataFolder'),
       snapshotData: () => invoke('app:snapshotData'),
+      notify: (title, body) => invoke('app:notify', { title, body }),
     },
     setup: { isComplete: () => invoke('setup:isComplete') },
     profile: { get: () => invoke('profile:get'), save: (p) => invoke('profile:save', p) },

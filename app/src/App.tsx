@@ -7,6 +7,7 @@ import { AppShell } from './ui/layout/AppShell.tsx'
 import { SetupPage } from './ui/pages/SetupPage.tsx'
 import { LockPage } from './ui/pages/LockPage.tsx'
 import { DashboardPage } from './ui/pages/DashboardPage.tsx'
+import { RegistrationsPage } from './ui/pages/RegistrationsPage.tsx'
 import { CustomersPage } from './ui/pages/CustomersPage.tsx'
 import { LicensesPage } from './ui/pages/LicensesPage.tsx'
 import { NotificationsPage } from './ui/pages/NotificationsPage.tsx'
@@ -21,6 +22,7 @@ function Guarded() {
     <Routes>
       <Route element={<AppShell />}>
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/registrations" element={<RegistrationsPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/licenses" element={<LicensesPage />} />
         <Route path="/features" element={<Navigate to="/customers" replace />} />
@@ -46,6 +48,12 @@ export function App() {
   useEffect(() => {
     if (status === 'unlocked') {
       void loadConfig().then(() => refreshData())
+      const stop = useDataStore.getState().startPolling(60_000)
+      // طلب إذن الإشعارات مرة واحدة
+      if ('Notification' in window && Notification.permission === 'default') {
+        void Notification.requestPermission().catch(() => {})
+      }
+      return () => stop()
     }
   }, [status, loadConfig, refreshData])
 

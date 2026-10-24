@@ -9,7 +9,7 @@
  *
  * The renderer gets results and masked flags only (see preload.cjs).
  */
-const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron')
+const { app, BrowserWindow, Notification, ipcMain, safeStorage, shell } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
@@ -812,6 +812,18 @@ const HANDLERS = {
     const cache = readJsonForUpdate('cache.json', {}, isPlainObject)
     cache[String(key)] = String(value)
     writeJson('cache.json', cache)
+    return { ok: true }
+  },
+  'app:notify': ({ title, body }) => {
+    try {
+      if (Notification.isSupported()) {
+        const n = new Notification({ title: String(title ?? 'تنبيه').slice(0, 80), body: String(body ?? '').slice(0, 200), silent: false })
+        n.on('click', () => {
+          if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); mainWindow.show() }
+        })
+        n.show()
+      }
+    } catch { /* ignore */ }
     return { ok: true }
   },
   'shell:openExternal': (url) => {

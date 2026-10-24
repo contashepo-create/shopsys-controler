@@ -1,10 +1,14 @@
 import { create } from 'zustand'
 import { bridge } from '../data/bridge.ts'
 import { buildCustomerViews, parseDevRecord, parseChatSummary, type CustomerView, type ChatOnlyDevice } from '../core/customers.ts'
+import { parseRegistrationRecord, type RegistrationRecord } from '../core/registrations.ts'
 import { mapLimit } from '../core/concurrency.ts'
 
 interface DataState {
   customers: CustomerView[]
+  registrations: RegistrationRecord[]
+  /** سجلات التسجيل التي لم يُصدَر لها مفتاح بعد (حالة بدون اشتراك) */
+  pendingRegistrations: RegistrationRecord[]
   loading: boolean
   error: string | null
   lastSyncAt: string | null
@@ -15,8 +19,18 @@ interface DataState {
   chatOnly: ChatOnlyDevice[]
   /** تنبيه غير قاتل: قائمة بادئة تجاوزت السقف فلم تُقرأ كلها */
   warning: string | null
+  /** عدّاد التسجيلات الجديدة غير المقروءة (للشريط الجانبي والتنبيه) */
+  unreadNew: number
+  /** آخر تسجيلات اعتُبرت جديدة — للتنبيه الصوتي/النظام */
+  lastNewIds: string[]
   refresh(): Promise<void>
+  /** تصفير عدّاد الجديد عند فتح صفحة التسجيلات */
+  markRegistrationsSeen(): void
+  /** بدء التحديث التلقائي كل N ثانية */
+  startPolling(intervalMs?: number): () => void
 }
+
+const POLL_DEFAULT_MS = 60_000
 
 /** سقف أمان لكل بادئة (يُنبَّه عند بلوغه بدل القصّ الصامت) */
 export const MAX_KEYS_PER_PREFIX = 5000
@@ -26,8 +40,6 @@ export const READ_CONCURRENCY = 12
 async function getAllValues(ns: 'license' | 'services', keys: readonly string[]): Promise<(readonly [string, string | null])[]> {
   return mapLimit(keys, READ_CONCURRENCY, async (key) => {
     const r = await bridge.cf.get(ns, key)
-    // قراءة فاشلة ≠ مفتاح فارغ: لو اعتبرناها فارغة لظهر العميل «بدون اشتراك» بلا ميزات،
-    // ولو أُعيد إصداره من تلك الصورة لسُحبت أقسامه. نُفشل التحديث ونُبقي البيانات السابقة.
     if (!r.ok) {
       const err = new Error(`تعذر قراءة ${key}: ${r.error ?? 'خطأ Cloudflare'} — بقيت البيانات السابقة، أعد التحديث بعد قليل`) as Error & { code?: string }
       err.code = r.code
@@ -55,8 +67,15 @@ async function listAll(ns: 'license' | 'services', prefix: string): Promise<List
   return { keys: all.slice(0, MAX_KEYS_PER_PREFIX), truncated: Boolean(cursor) || all.length > MAX_KEYS_PER_PREFIX }
 }
 
+/** ذاكرة خارج المتجر لتتبع الجديد بين التحديثات */
+let seenRegIds = new Set<string>()
+let pollingTimer: ReturnType<typeof setInterval> | null = null
+let initialLoadDone = false
+
 export const useDataStore = create<DataState>((set, get) => ({
   customers: [],
+  registrations: [],
+  pendingRegistrations: [],
   loading: false,
   error: null,
   lastSyncAt: null,
@@ -64,15 +83,40 @@ export const useDataStore = create<DataState>((set, get) => ({
   servicesError: null,
   chatOnly: [],
   warning: null,
+  unreadNew: 0,
+  lastNewIds: [],
+
+  markRegistrationsSeen: () => {
+    // نحفظ كل المعرفات الحالية كـ "مقروءة" ونصفّر العدّاد
+    const ids = get().registrations.map((r) => r.deviceId)
+    seenRegIds = new Set(ids)
+    try { localStorage.setItem('controler:seenRegIds', JSON.stringify(ids)) } catch { /* ignore */ }
+    set({ unreadNew: 0, lastNewIds: [] })
+  },
 
   refresh: () => {
-    // تحديث جارٍ؟ لا نتجاهل الطلب (كان يضيع تحديث ما بعد الإصدار) — نجدول تحديثاً واحداً بعده
     if (inflight) {
       queued ??= inflight.then(() => { queued = null; return get().refresh() })
       return queued
     }
     inflight = runRefresh(set, get).finally(() => { inflight = null })
     return inflight
+  },
+
+  startPolling: (intervalMs = POLL_DEFAULT_MS) => {
+    if (pollingTimer) clearInterval(pollingTimer)
+    pollingTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      void get().refresh()
+    }, intervalMs)
+    // تحديث فوري عند عودة التركيز
+    const onFocus = () => void get().refresh()
+    if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
+    return () => {
+      if (pollingTimer) clearInterval(pollingTimer)
+      pollingTimer = null
+      if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
+    }
   },
 }))
 
@@ -83,23 +127,17 @@ type SetState = (partial: Partial<DataState>) => void
 async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
   set({ loading: true, error: null })
 
-  // بيانات التراخيص أساسية إلزامية؛ بيانات الخدمات (الدعم) اختيارية —
-  // غياب مساحة الخدمات لا يجوز أن يُسقط شاشات التراخيص والعملاء.
   try {
-    // ① القوائم + قائمة الحرق. لا نسرد lic: إطلاقاً: كل إعادة إصدار تضيف سجلاً وتُبقي القديم،
-    //    فكانت قائمة lic: تتضخم وتُقصّ عند السقف — ومفاتيحها مرتّبة ببصمة عشوائية، فيسقط
-    //    السجل «الحالي» لعملاء عشوائيين (بلا ميزات/أقسام، وإعادة إصدارهم تسحب أقسامهم).
-    //    سرد chat: (مساحة الخدمات) بالتوازي أيضاً لكن فشله لا يُسقط شيئاً
-    const [devList, logList, emailList, revokedRaw, chatListed] = await Promise.all([
+    const [devList, logList, emailList, revokedRaw, chatListed, regList] = await Promise.all([
       listAll('license', 'dev:'),
       listAll('license', 'log:'),
       listAll('license', 'email:'),
       bridge.cf.get('license', 'revoked'),
       listAll('services', 'chat:').then((list) => ({ list }), (e: unknown) => ({ error: e })),
+      listAll('license', 'reg:').then((list) => ({ list }), () => ({ list: { keys: [] as string[], truncated: false } })),
     ])
     if (!revokedRaw.ok) throw Object.assign(new Error(`تعذر قراءة قائمة الحرق: ${revokedRaw.error ?? ''}`), { code: revokedRaw.code })
 
-    // ② سجلات الأجهزة أولاً — منها نعرف البصمات الحالية فعلاً
     const devEntries = await getAllValues('license', devList.keys)
     const deviceIds = new Set(devEntries.map(([k]) => k.slice('dev:'.length)))
     const fingerprints = new Set<string>()
@@ -108,8 +146,6 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
       if (typeof fp === 'string' && fp) fingerprints.add(fp)
     }
 
-    // ③ في طابور واحد (حد تزامن كلي واحد): سجل المفتاح الحالي لكل جهاز فقط + سجلات نشاط
-    //    الأجهزة المعروفة + فهرس البريد
     const licKeys = [...fingerprints].map((fp) => `lic:${fp}`)
     const logKeys = logList.keys.filter((k) => deviceIds.has(k.slice('log:'.length)))
     const groups = [licKeys, logKeys, emailList.keys]
@@ -122,15 +158,35 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
     if (!Array.isArray(revoked)) revoked = []
     revoked = revoked.filter((x): x is string => typeof x === 'string')
 
-    // ④ مساحة الخدمات: تُقرأ منفصلة وبلا إسقاط للعملية كلها
+    // التسجيلات — تُقرأ حتى لو فشلت الخدمات
+    let registrations: RegistrationRecord[] = []
+    let regTruncated = false
+    try {
+      const list = (regList as { list: Listing }).list
+      if (list) {
+        regTruncated = list.truncated
+        if (list.keys.length) {
+          const regEntries = await getAllValues('license', list.keys)
+          for (const [, raw] of regEntries) {
+            const rec = parseRegistrationRecord(raw)
+            if (rec) registrations.push(rec)
+          }
+          registrations.sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)))
+        }
+      }
+    } catch {
+      // تسجيلات اختيارية — لا تُسقط التحديث
+      registrations = get().registrations
+    }
+
     let chatEntries: (readonly [string, string | null])[] = []
     let servicesAvailable = true
     let servicesError: string | null = null
     let chatTruncated = false
     try {
       if ('error' in chatListed) throw chatListed.error
-      chatTruncated = chatListed.list.truncated
-      chatEntries = await getAllValues('services', chatListed.list.keys)
+      chatTruncated = (chatListed as { list: Listing }).list.truncated
+      chatEntries = await getAllValues('services', (chatListed as { list: Listing }).list.keys)
     } catch (e) {
       servicesAvailable = false
       servicesError = e instanceof Error ? e.message : String(e)
@@ -156,10 +212,61 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
       if (sum.count > 0) chatOnly.push({ deviceId, lastSupportAt: sum.lastAt, supportUnread: sum.unread })
     }
 
+    // حساب المعلّق (بدون رخصة): سجل dev بخطة فارغة
+    const devById = new Map<string, ReturnType<typeof parseDevRecord>>()
+    for (const [k, v] of strip('dev:')(devEntries)) devById.set(k, parseDevRecord(v))
+    const hasLicense = (deviceId: string) => {
+      const rec = devById.get(deviceId)
+      return Boolean(rec && String(rec.plan ?? '').trim())
+    }
+    const pendingRegistrations = registrations.filter((r) => !hasLicense(r.deviceId))
+
+    // كشف الجديد: مقارنة مع ما رُئي من قبل (من الذاكرة أو التخزين المحلي)
+    if (!initialLoadDone) {
+      try {
+        const stored = localStorage.getItem('controler:seenRegIds')
+        if (stored) seenRegIds = new Set(JSON.parse(stored) as string[])
+        else if (registrations.length) seenRegIds = new Set(registrations.map((r) => r.deviceId))
+      } catch { /* ignore */ }
+      initialLoadDone = true
+    }
+    const newIds = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).map((r) => r.deviceId)
+    const shouldNotify = initialLoadDone && seenRegIds.size > 0 && newIds.length > 0
+    const unreadNew = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).length
+    let lastNewIds: string[] = get().lastNewIds
+    if (newIds.length && shouldNotify) {
+      try {
+        const first = pendingRegistrations.find((r) => newIds.includes(r.deviceId))
+        const title = `🆕 تسجيل عميل جديد${newIds.length > 1 ? ` (+${newIds.length - 1})` : ''}`
+        const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${newIds.length} عميل جديد`
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(title, { body })
+        } else if ('Notification' in window && Notification.permission !== 'denied') {
+          void Notification.requestPermission().then((perm) => {
+            if (perm === 'granted') new Notification(title, { body })
+          })
+        }
+        const w = window as unknown as { controlerDesktop?: Record<string, unknown> }
+        const notify = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
+        if (typeof notify === 'function') void notify({ title, body }).catch(() => {})
+        // صوت تنبيه (إن وجد)
+        try {
+          const audio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAIA')
+          void audio.play().catch(() => {})
+        } catch { /* ignore */ }
+        lastNewIds = newIds
+      } catch { /* best effort */ }
+    } else if (newIds.length) {
+      lastNewIds = newIds
+    } else if (pendingRegistrations.length === 0) {
+      lastNewIds = []
+    }
+
     const truncated = [
       devList.truncated && 'الأجهزة (dev:)',
       logList.truncated && 'سجلات النشاط (log:)',
       emailList.truncated && 'البريد (email:)',
+      regTruncated && 'التسجيلات (reg:)',
       chatTruncated && 'محادثات الدعم (chat:)',
     ].filter(Boolean)
     const warning = truncated.length
@@ -167,14 +274,13 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
       : null
 
     const at = new Date().toISOString()
-    set({ customers, chatOnly, warning, loading: false, lastSyncAt: at, servicesAvailable, servicesError })
+    set({ customers, registrations, pendingRegistrations, chatOnly, warning, loading: false, lastSyncAt: at, servicesAvailable, servicesError, unreadNew, lastNewIds })
     try {
-      await bridge.db.cachePut('customers:snapshot', JSON.stringify({ at, customers }))
+      await bridge.db.cachePut('customers:snapshot', JSON.stringify({ at, customers, registrations: registrations.slice(0, 100) }))
     } catch { /* cache is best-effort */ }
   } catch (e) {
     const code = (e as Error & { code?: string })?.code
     const message = e instanceof Error ? e.message : String(e)
-    // مساحة الخدمات وحدها لا تُعطّل اللوحة — يُعرض تنبيه لطيف أعلى الشاشة
     if (code === 'ns_missing' && message.includes('الخدمات')) {
       set({ loading: false, servicesAvailable: false, servicesError: message, customers: get().customers, lastSyncAt: new Date().toISOString() })
       return

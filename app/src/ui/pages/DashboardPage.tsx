@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { KeyRound, BellRing } from 'lucide-react'
+import { KeyRound, BellRing, UserPlus } from 'lucide-react'
 import { useDataStore } from '../../stores/data.store.ts'
 import { expiringFirst, STATUS_LABELS_AR } from '../../core/customers.ts'
 import { PLAN_LABELS_AR, type LicensePlan } from '../../core/license.ts'
@@ -9,7 +9,7 @@ import { isDesktop } from '../../data/bridge.ts'
 
 export function DashboardPage() {
   const navigate = useNavigate()
-  const { customers, chatOnly, error, warning } = useDataStore()
+  const { customers, chatOnly, error, warning, registrations, pendingRegistrations } = useDataStore()
 
   const kpis = useMemo(() => {
     const active = customers.filter((c) => c.status === 'active').length
@@ -18,8 +18,9 @@ export function DashboardPage() {
     const revoked = customers.filter((c) => c.status === 'revoked').length
     const support = customers.filter((c) => c.lastSupportAt).length + chatOnly.length
     const unread = customers.filter((c) => c.supportUnread).length + chatOnly.filter((d) => d.supportUnread).length
-    return { total: customers.length, active, expiring, expired, revoked, support, unread }
-  }, [customers, chatOnly])
+    const pending = pendingRegistrations.length
+    return { total: customers.length, active, expiring, expired, revoked, support, unread, pending, regs: registrations.length }
+  }, [customers, chatOnly, pendingRegistrations, registrations])
 
   const recent = useMemo(
     // lastSeenAt بصيغة ISO وlastActivityAt بصيغة «YYYY-MM-DD HH:MM» — نوحّدهما قبل المقارنة
@@ -45,12 +46,37 @@ export function DashboardPage() {
 
       <div className="kpi-grid" style={{ marginBlockEnd: 16 }}>
         <div className="kpi"><div className="kpi-value">{kpis.total}</div><div className="kpi-label">إجمالي العملاء</div></div>
+        <div className="kpi" style={{ borderColor: kpis.pending ? 'var(--warn)' : undefined, cursor: kpis.pending ? 'pointer' : undefined }} onClick={() => kpis.pending && navigate('/registrations')}><div className="kpi-value" style={{ color: kpis.pending ? 'var(--warn)' : 'var(--accent)' }}>{kpis.pending}</div><div className="kpi-label">🆕 جديد بانتظار التفعيل</div>{kpis.pending ? <div style={{ fontSize: 11, color: 'var(--muted)' }}>{kpis.regs} تسجيل كلي</div> : null}</div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--ok)' }}>{kpis.active}</div><div className="kpi-label">اشتراك نشط</div></div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--warn)' }}>{kpis.expiring}</div><div className="kpi-label">قرب الانتهاء (٧ أيام)</div></div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--danger)' }}>{kpis.expired}</div><div className="kpi-label">منتهٍ</div></div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--danger)' }}>{kpis.revoked}</div><div className="kpi-label">محروق</div></div>
         <div className="kpi"><div className="kpi-value" style={{ color: 'var(--accent-2)' }}>{kpis.support}</div><div className="kpi-label">عملاء راسلوا الدعم{kpis.unread ? ` · ${kpis.unread} بانتظار ردك` : ''}</div></div>
       </div>
+
+      {kpis.pending > 0 ? (
+        <div className="card" style={{ marginBlockEnd: 16, borderColor: 'var(--warn)', background: 'linear-gradient(135deg, rgba(251,191,36,0.08), rgba(45,212,191,0.05))' }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 28 }}>🎉</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 800 }}>لديك {kpis.pending} عميل جديد سجّل الآن!</div>
+              <div className="muted" style={{ fontSize: 12.5 }}>ثبّت التطبيق وأرسل بياناته تلقائياً — يظهر هنا فوراً. فعّله بضغطة ليبدأ العمل.</div>
+            </div>
+            <button className="btn btn-primary" onClick={() => navigate('/registrations')}><UserPlus size={14} /> عرض التسجيلات الجديدة</button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8, marginBlockStart: 12 }}>
+            {pendingRegistrations.slice(0, 4).map((r) => (
+              <div key={r.deviceId} style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{r.shopName || r.ownerName || 'عميل جديد'}</div>
+                  <div className="muted" style={{ fontSize: 11.5 }}>{r.phone || r.email || r.deviceId.slice(0, 14)}</div>
+                </div>
+                <button className="btn btn-sm btn-primary" onClick={() => navigate('/registrations')}>تفعيل</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid-2" style={{ alignItems: 'start' }}>
         <div className="card">

@@ -77,8 +77,19 @@ export function CustomersPage() {
     setIssueFromRow(false)
   }
 
+  const pendingCount = useDataStore((s) => s.pendingRegistrations.length)
+
+  const newBanner = pendingCount > 0 ? (
+    <div className="card" style={{ borderColor: 'var(--warn)', background: 'rgba(251,191,36,0.08)', marginBlockEnd: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
+      <span>🆕</span>
+      <span style={{ flex: 1 }}><b>{pendingCount} عملاء جدد</b> سجّلوا ولم يُفعَّلوا — يظهرون كـ «بدون اشتراك»</span>
+      <Link className="btn btn-sm btn-primary" to="/registrations">عرض التسجيلات بالتفصيل</Link>
+    </div>
+  ) : null
+
   return (
     <>
+      {newBanner}
       <div className="card" style={{ marginBlockEnd: 14 }}>
         <div className="row">
           <input className="input" style={{ flex: 1, minInlineSize: 220 }} placeholder="🔍 بحث بالاسم / الجهاز / البريد / النشاط…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -178,6 +189,8 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
   const [flags, setFlags] = useState<{ disabledFeatures: string[]; noteAr: string }>({ disabledFeatures: [], noteAr: '' })
   const [flagsError, setFlagsError] = useState('')
   const [busy, setBusy] = useState(false)
+  const registrations = useDataStore((s) => s.registrations)
+  const reg = registrations.find((r) => r.deviceId === c.deviceId) ?? null
   const activity = resolveClientActivity(c).id
   const included = modulesIncludedInActivity(activity)
   // ما يضيفه المفتاح فوق النشاط فقط — بلا تكرار لقسم مشمول أصلاً
@@ -254,6 +267,15 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
             {knownPlan ? <li>الفروع: {totalBranches(plan, c.extraBranches)} (منها {c.extraBranches} إضافي) · المستخدمون: {totalUsers(plan, c.extraUsers)}</li> : null}
             <li>آخر ظهور: {fmtTime(c.lastSeenAt)} · آخر حدث: {c.lastActivityAt ?? '—'}</li>
             {c.email ? <li>البريد: {c.email}</li> : null}
+            {reg ? (
+              <>
+                {reg.phone ? <li>📞 الهاتف (من التسجيل): <span dir="ltr">{reg.phone}</span></li> : null}
+                {reg.email ? <li>📧 البريد (من التسجيل): {reg.email}</li> : null}
+                {reg.city || reg.street ? <li>📍 العنوان: {[reg.city, reg.street].filter(Boolean).join(' — ')}</li> : null}
+                <li>🧭 النشاط (من التسجيل): {reg.activityNameAr || reg.activityId || '—'}</li>
+                {reg.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(reg.pendingChanges).map(([k,v])=> `${k}: ${v}`).join(' · ')}</li> : null}
+              </>
+            ) : null}
             {c.message ? <li>رسالة على حسابه: {c.message}</li> : null}
           </ul>
         </div>
