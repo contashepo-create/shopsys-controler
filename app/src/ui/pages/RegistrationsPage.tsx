@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useDataStore } from '../../stores/data.store.ts'
 import { bridge } from '../../data/bridge.ts'
-import { filterRegistrations, type RegistrationRecord } from '../../core/registrations.ts'
+import { filterRegistrations, PENDING_LABELS, type RegistrationRecord } from '../../core/registrations.ts'
 import { Btn, Badge, EmptyState, Modal, useToast, ConfirmDialog } from '../components/ui.tsx'
 import { IssueForm } from '../components/IssueForm.tsx'
 import { Users, Phone, Mail, MapPin, Activity, Copy, Trash2, KeyRound, Search, RefreshCw } from 'lucide-react'
@@ -136,7 +136,7 @@ export function RegistrationsPage() {
                   <div className="muted" style={{ fontSize: 11.5 }}>التسجيل: {fmtDate(r.registeredAt)} · آخر ظهور: {fmtDate(r.lastSeenAt)} · بلاغات: {r.reports}{r.appVersion ? ` · إصدار ${r.appVersion}` : ''}{r.platform ? ` · ${r.platform}` : ''}</div>
                   {r.pendingChanges ? (
                     <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }}>
-                      ⚠️ بيانات جديدة لم تُعتمد من بلاغ لاحق ({r.pendingAt ? fmtDate(r.pendingAt) : ''}): {Object.entries(r.pendingChanges).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                      ⚠️ بيانات جديدة لم تُعتمد من بلاغ لاحق ({r.pendingAt ? fmtDate(r.pendingAt) : ''}): {Object.entries(r.pendingChanges).map(([k, v]) => `${PENDING_LABELS[k] ?? k}: ${v}`).join(' · ')}
                     </div>
                   ) : null}
                 </div>
@@ -208,7 +208,7 @@ function RegistrationDetailModal(props: { record: RegistrationRecord; licensed: 
           <li>آخر بلاغ: {fmtDate(r.lastSeenAt)}</li>
           <li>التسجيل: {fmtDate(r.registeredAt)}</li>
           <li>عدد البلاغات: {r.reports}</li>
-          {r.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(r.pendingChanges).map(([k, v]) => `${k}: ${v}`).join(' · ')} (من {r.pendingAt ? fmtDate(r.pendingAt) : '—'})</li> : null}
+          {r.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(r.pendingChanges).map(([k, v]) => `${PENDING_LABELS[k] ?? k}: ${v}`).join(' · ')} (من {r.pendingAt ? fmtDate(r.pendingAt) : '—'})</li> : null}
         </ul>
         <div className="mono muted" style={{ fontSize: 11, marginBlockStart: 8 }}>{r.deviceId}</div>
       </div>

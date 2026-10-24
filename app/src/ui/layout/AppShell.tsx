@@ -80,8 +80,8 @@ export function AppShell() {
           {lastNewIds.length > 0 ? (
             <div className="notice" style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.4)' }}>
               <Bell size={16} color="var(--accent)" />
-              <span style={{ flex: 1 }}>🆕 <b>عميل جديد</b> — سجّل جهازه للتو ويحتاج تفعيلاً. لم يعد يفوتك أي تسجيل.</span>
-              <Link className="btn btn-sm btn-primary" to="/registrations">عرض التسجيلات</Link>
+              <span style={{ flex: 1 }}>🆕 <b>{lastNewIds.length === 1 ? 'عميل جديد' : `${lastNewIds.length} عملاء جدد`}</b> — سجّل{lastNewIds.length === 1 ? '' : 'وا'} الجهاز للتو ويحتاج{lastNewIds.length === 1 ? '' : 'ون'} تفعيلاً. لم يعد يفوتك أي تسجيل.</span>
+              <Link className="btn btn-sm btn-primary" to="/registrations">عرض{lastNewIds.length > 1 ? ` ${lastNewIds.length}` : ''} التسجيلات</Link>
             </div>
           ) : null}
           {!servicesAvailable ? (

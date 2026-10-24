@@ -7,6 +7,7 @@ import { filterCustomers, isValidPlan, sortCustomers, STATUS_LABELS_AR, type Cus
 import { PLAN_LABELS_AR, FEATURE_LABELS_AR, MODULE_LABELS_AR, LICENSE_FEATURES, type LicensePlan, type LicenseFeature } from '../../core/license.ts'
 import { activityDisplay, activityLabel, modulesIncludedInActivity, resolveClientActivity } from '../../core/activities.ts'
 import { totalBranches, totalUsers } from '../../core/issueForm.ts'
+import { PENDING_LABELS } from '../../core/registrations.ts'
 import { Btn, Modal, useToast, EmptyState, Badge, ConfirmDialog } from '../components/ui.tsx'
 import { StatusBadge } from './DashboardPage.tsx'
 import { IssueForm, ActivationExplainer } from '../components/IssueForm.tsx'
@@ -273,7 +274,7 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
                 {reg.email ? <li>📧 البريد (من التسجيل): {reg.email}</li> : null}
                 {reg.city || reg.street ? <li>📍 العنوان: {[reg.city, reg.street].filter(Boolean).join(' — ')}</li> : null}
                 <li>🧭 النشاط (من التسجيل): {reg.activityNameAr || reg.activityId || '—'}</li>
-                {reg.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(reg.pendingChanges).map(([k,v])=> `${k}: ${v}`).join(' · ')}</li> : null}
+                {reg.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(reg.pendingChanges).map(([k,v])=> `${PENDING_LABELS[k] ?? k}: ${v}`).join(' · ')}</li> : null}
               </>
             ) : null}
             {c.message ? <li>رسالة على حسابه: {c.message}</li> : null}

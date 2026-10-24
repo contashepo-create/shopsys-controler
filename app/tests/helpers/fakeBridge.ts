@@ -76,7 +76,7 @@ export function createFakeBridge(): FakeBridge {
 
   f.bridge = {
     runtime: 'electron',
-    app: { version: async () => 'test', dataInfo: notUsed, openDataFolder: notUsed, snapshotData: notUsed },
+    app: { version: async () => 'test', dataInfo: notUsed, openDataFolder: notUsed, snapshotData: notUsed, notify: async () => {} },
     setup: { isComplete: async () => ({ hasProfile: true, hasPassword: true }) },
     profile: { get: async () => null, save: async () => {} },
     auth: {

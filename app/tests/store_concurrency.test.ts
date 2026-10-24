@@ -37,10 +37,13 @@ describe('mapLimit', () => {
   })
 })
 
+const { __resetRegistrationsState: __reset2 } = await import('../src/stores/data.store.ts')
 describe('data.store.refresh مع 300 عميل', () => {
   beforeEach(() => {
     h.fake.reset()
-    useDataStore.setState({ customers: [], loading: false, error: null })
+    __reset2()
+    try { localStorage.clear() } catch { /* ignore */ }
+    useDataStore.setState({ customers: [], registrations: [], pendingRegistrations: [], unreadNew: 0, lastNewIds: [], loading: false, error: null })
   })
 
   function seed(n: number) {

@@ -78,6 +78,27 @@ export function __resetRegistrationsState() {
   seenRegIds = new Set()
   notifiedIds = new Set()
   initialLoadDone = false
+  try { localStorage.removeItem('controler:seenRegIds') } catch { /* ignore */ }
+}
+
+function playNewRegistrationSound() {
+  try {
+    const Ctx = (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
+      ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx()
+    const o = ctx.createOscillator()
+    const g = ctx.createGain()
+    o.type = 'sine'
+    o.frequency.value = 880
+    o.connect(g); g.connect(ctx.destination)
+    g.gain.setValueAtTime(0.0001, ctx.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02)
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35)
+    o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.36)
+    // تنظيف بعد الانتهاء
+    setTimeout(() => { try { ctx.close() } catch { /* ignore */ } }, 800)
+  } catch { /* الصوت أفضل جهد — لا يُسقط التنبيه */ }
 }
 
 export const useDataStore = create<DataState>((set, get) => ({
@@ -231,6 +252,7 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
 
     // كشف الجديد: مقارنة مع ما رُئي من قبل (من الذاكرة أو التخزين المحلي)
     const firstLoad = !initialLoadDone
+    let hadStored = false
     if (firstLoad) {
       try {
         const stored = localStorage.getItem('controler:seenRegIds')
@@ -238,10 +260,12 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
           const parsed = JSON.parse(stored) as string[]
           seenRegIds = new Set(parsed)
           for (const id of parsed) notifiedIds.add(id)
+          hadStored = parsed.length > 0
         } else if (registrations.length) {
           const ids = registrations.map((r) => r.deviceId)
           seenRegIds = new Set(ids)
           for (const id of ids) notifiedIds.add(id)
+          hadStored = false
         }
       } catch { /* ignore */ }
     }
@@ -249,13 +273,15 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
     const unreadNew = pendingRegistrations.filter((r) => !seenRegIds.has(r.deviceId)).length
     // للتنبيه: فقط من لم نُنبّه عنه من قبل (حتى لا نكرر كل دقيقة لنفس العميل)
     const notifyCandidates = pendingRegistrations.filter((r) => !notifiedIds.has(r.deviceId)).map((r) => r.deviceId)
-    const shouldNotify = !firstLoad && seenRegIds.size > 0 && notifyCandidates.length > 0
+    // يُسمح بالتنبيه في أول تحميل فقط إن كان هناك سجل محفوظ سابقاً وجاء جديد أثناء الإغلاق
+    const shouldNotify = notifyCandidates.length > 0 && seenRegIds.size > 0 && (!firstLoad || hadStored)
     let lastNewIds: string[] = get().lastNewIds
     if (notifyCandidates.length && shouldNotify) {
       try {
         const first = pendingRegistrations.find((r) => notifyCandidates.includes(r.deviceId))
         const title = `🆕 تسجيل عميل جديد${notifyCandidates.length > 1 ? ` (+${notifyCandidates.length - 1})` : ''}`
         const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${notifyCandidates.length} عميل جديد`
+        // 1) تنبيه المتصفح
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification(title, { body })
         } else if ('Notification' in window && Notification.permission !== 'denied') {
@@ -263,18 +289,30 @@ async function runRefresh(set: SetState, get: () => DataState): Promise<void> {
             if (perm === 'granted') new Notification(title, { body })
           })
         }
+        // 2) تنبيه نظام ويندوز عبر Electron
+        try { void bridge.app.notify(title, body) } catch { /* أفضل جهد */ }
         const w = window as unknown as { controlerDesktop?: Record<string, unknown> }
-        const notify = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
-        if (typeof notify === 'function') void notify({ title, body }).catch(() => {})
+        const legacy = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
+        if (typeof legacy === 'function') void legacy({ title, body }).catch(() => {})
+        // 3) صوت تنبيه داخل اللوحة
+        playNewRegistrationSound()
+        // 4) تيليجرام للمطور (أفضل جهد — لا يُسقط التحديث)
+        try {
+          const tgText = `🆕 تسجيل عميل جديد (${notifyCandidates.length})\n${pendingRegistrations.filter(r=>notifyCandidates.includes(r.deviceId)).map(r=> `• ${r.shopName||'بلا اسم'} — ${r.ownerName||''} — ${r.phone||r.email||r.deviceId}\n  ${r.city ? `${r.city} — ` : ''}${r.activityNameAr||r.activityId||''}`).join('\n')}`
+          void bridge.tg.send(tgText).catch(() => {})
+        } catch { /* ignore */ }
         lastNewIds = notifyCandidates
         for (const id of notifyCandidates) notifiedIds.add(id)
       } catch { /* best effort */ }
-    } else if (notifyCandidates.length && firstLoad) {
-      // أول تحميل بعد التثبيت: لا تنبيه لكن نحفظ كـ "مُنبَّه" حتى لا يزعج لاحقاً
-      lastNewIds = notifyCandidates
+    } else if (notifyCandidates.length && firstLoad && !hadStored) {
+      // تثبيت أول مرّة بلا سجل محفوظ: لا تنبيه لكن نحفظ كـ "مُنبَّه" حتى لا يزعج لاحقاً
+      lastNewIds = []
       for (const id of notifyCandidates) notifiedIds.add(id)
     } else if (pendingRegistrations.length === 0) {
       lastNewIds = []
+    } else if (notifyCandidates.length === 0 && lastNewIds.length > 0) {
+      // لا جديد لكن آخر تنبيه ما زال يظهر — يُصفّى فقط عند markSeen أو عند انتهاء pending
+      // (نُبقيه ظاهراً حتى يفتح المستخدم الصفحة)
     }
     if (firstLoad) initialLoadDone = true
 

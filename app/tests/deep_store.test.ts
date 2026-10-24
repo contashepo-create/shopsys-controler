@@ -22,9 +22,12 @@ const { generateOtpCode, buildOtpMessage } = await import('../src/core/otp.ts')
 const payload = (deviceId: string, over: Record<string, unknown> = {}) =>
   ({ v: 1, deviceId, customer: 'عميل', plan: 'pro', features: ['reports'], issuedAt: '2026-01-01', expiresAt: '2099-01-01', ...over })
 
+const { __resetRegistrationsState } = await import('../src/stores/data.store.ts')
 beforeEach(() => {
   h.fake.reset()
-  useDataStore.setState({ customers: [], chatOnly: [], warning: null, loading: false, error: null, servicesAvailable: true, servicesError: null })
+  __resetRegistrationsState()
+  try { localStorage.clear() } catch { /* ignore */ }
+  useDataStore.setState({ customers: [], registrations: [], pendingRegistrations: [], unreadNew: 0, lastNewIds: [], chatOnly: [], warning: null, loading: false, error: null, servicesAvailable: true, servicesError: null })
 })
 
 describe('data.store — سجلات lic: القديمة لا تُسقط السجل الحالي', () => {
