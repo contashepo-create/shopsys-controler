@@ -34,8 +34,8 @@ const viewOf = (deviceId: string) => {
     revoked: h.fake.json<string[]>('license', 'revoked') ?? [], todayIso: new Date().toISOString().slice(0, 10),
   }).find((c) => c.deviceId === deviceId)!
 }
-
-beforeEach(() => { h.fake.reset() })
+const { __resetRegistrationsState: __reset3 } = await import('../src/stores/data.store.ts')
+beforeEach(() => { h.fake.reset(); __reset3(); try { localStorage.clear() } catch { /* ignore */ } })
 
 describe('readForUpdate / appendLog', () => {
   it('readForUpdate يرمي عند الفشل ويحمل الرمز؛ مفتاح غير موجود = null', async () => {

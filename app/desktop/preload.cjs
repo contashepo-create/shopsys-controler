@@ -7,6 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 const CHANNELS = [
   'app:version',
   'app:dataInfo',
+  'app:notify',
   'app:openDataFolder',
   'app:snapshotData',
   'update:state',

@@ -362,3 +362,44 @@ describe('صحة التاريخ', () => {
     expect(expiresAfterDays(1, today())).toBe(expiresAfterDays(1))
   })
 })
+
+describe('عميل جديد مسجَّل بلا رخصة سابقة (status=none)', () => {
+  it('يأخذ الميزات والأقسام الافتراضية ويُسجَّل كتفعيل أول (renew=false) لا تجديد', async () => {
+    const user = userEvent.setup()
+    const freshReg = customer({
+      customer: 'سوبر ماركت الهدى',
+      plan: '',
+      expiresAt: null,
+      fingerprint: null,
+      licenseKey: null,
+      licenseIssuedAt: null,
+      status: 'none',
+      features: [],
+      extraModules: [],
+      activityId: null,
+      clientActivityId: 'grocery',
+    })
+    renderForm({ customer: freshReg })
+    await waitFor(() => expect(selectOf('الباقة').value).toBe('pro'))
+    expect(screen.getByText(/عميل مسجَّل — سوبر ماركت الهدى · بلا باقة/)).toBeTruthy()
+    expect(inputOf('اسم العميل *').value).toBe('سوبر ماركت الهدى')
+    expect(selectOf('النشاط').value).toBe('grocery')
+    expect(inputOf('المدة (أيام)').value).toBe('90')
+    expect(chipBox('بوت تليجرام').checked).toBe(true)
+    expect(chipBox('المختبر').checked).toBe(true)
+
+    await user.click(submitBtn())
+    await waitFor(() => expect(m.issueLicense).toHaveBeenCalledTimes(1))
+    const [input, opts] = m.issueLicense.mock.calls[0]
+    expect(input).toMatchObject({
+      deviceId: DEV,
+      customer: 'سوبر ماركت الهدى',
+      plan: 'pro',
+      days: 90,
+      activityId: 'grocery',
+      extraModules: ['lab'],
+    })
+    expect([...input.features].sort()).toEqual(['multi_branch', 'telegram_bot'])
+    expect(opts).toEqual({ renew: false, burnFingerprint: null })
+  })
+})

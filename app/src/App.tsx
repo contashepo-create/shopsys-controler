@@ -2,11 +2,13 @@ import { useEffect } from 'react'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useSessionStore, applyTheme } from './stores/session.store.ts'
 import { useDataStore } from './stores/data.store.ts'
+import { isDesktop } from './data/bridge.ts'
 import { ToastProvider } from './ui/components/ui.tsx'
 import { AppShell } from './ui/layout/AppShell.tsx'
 import { SetupPage } from './ui/pages/SetupPage.tsx'
 import { LockPage } from './ui/pages/LockPage.tsx'
 import { DashboardPage } from './ui/pages/DashboardPage.tsx'
+import { RegistrationsPage } from './ui/pages/RegistrationsPage.tsx'
 import { CustomersPage } from './ui/pages/CustomersPage.tsx'
 import { LicensesPage } from './ui/pages/LicensesPage.tsx'
 import { NotificationsPage } from './ui/pages/NotificationsPage.tsx'
@@ -21,6 +23,7 @@ function Guarded() {
     <Routes>
       <Route element={<AppShell />}>
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/registrations" element={<RegistrationsPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/licenses" element={<LicensesPage />} />
         <Route path="/features" element={<Navigate to="/customers" replace />} />
@@ -45,7 +48,21 @@ export function App() {
   useEffect(() => { void init() }, [init])
   useEffect(() => {
     if (status === 'unlocked') {
-      void loadConfig().then(() => refreshData())
+      let cancelled = false
+      let stopPoll: (() => void) | null = null
+      void loadConfig().then(() => {
+        if (cancelled) return
+        void refreshData()
+        stopPoll = useDataStore.getState().startPolling()
+      })
+      // طلب إذن الإشعارات في المتصفح فقط (سطح المكتب يستخدم Notification الأصلية في main.cjs)
+      if (!isDesktop() && 'Notification' in window && Notification.permission === 'default') {
+        void Notification.requestPermission().catch(() => {})
+      }
+      return () => {
+        cancelled = true
+        stopPoll?.()
+      }
     }
   }, [status, loadConfig, refreshData])
 

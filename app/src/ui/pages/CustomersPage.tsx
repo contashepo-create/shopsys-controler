@@ -7,6 +7,7 @@ import { filterCustomers, isValidPlan, sortCustomers, STATUS_LABELS_AR, type Cus
 import { PLAN_LABELS_AR, FEATURE_LABELS_AR, MODULE_LABELS_AR, LICENSE_FEATURES, type LicensePlan, type LicenseFeature } from '../../core/license.ts'
 import { activityDisplay, activityLabel, modulesIncludedInActivity, resolveClientActivity } from '../../core/activities.ts'
 import { totalBranches, totalUsers } from '../../core/issueForm.ts'
+import { pendingLabelAr } from '../../core/registrations.ts'
 import { Btn, Modal, useToast, EmptyState, Badge, ConfirmDialog } from '../components/ui.tsx'
 import { StatusBadge } from './DashboardPage.tsx'
 import { IssueForm, ActivationExplainer } from '../components/IssueForm.tsx'
@@ -77,8 +78,20 @@ export function CustomersPage() {
     setIssueFromRow(false)
   }
 
+  const pendingCount = useDataStore((s) => s.pendingRegistrations.length)
+
+  const newBanner = pendingCount > 0 ? (
+    <div className="card" style={{ borderColor: 'var(--warn)', background: 'rgba(251,191,36,0.08)', marginBlockEnd: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span>🆕</span>
+      <span style={{ flex: 1 }}><b>{pendingCount === 1 ? 'عميل جديد' : `${pendingCount} عملاء جدد`}</b> سجّلوا ولم يُفعَّلوا — يظهرون في الجدول كـ «بدون اشتراك»</span>
+      <Btn size="sm" onClick={() => setStatus(status === 'none' ? 'all' : 'none')}>{status === 'none' ? 'عرض الكل' : 'فلترة «بدون اشتراك»'}</Btn>
+      <Link className="btn btn-sm btn-primary" to="/registrations">عرض التسجيلات بالتفصيل</Link>
+    </div>
+  ) : null
+
   return (
     <>
+      {newBanner}
       <div className="card" style={{ marginBlockEnd: 14 }}>
         <div className="row">
           <input className="input" style={{ flex: 1, minInlineSize: 220 }} placeholder="🔍 بحث بالاسم / الجهاز / البريد / النشاط…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -178,13 +191,16 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
   const [flags, setFlags] = useState<{ disabledFeatures: string[]; noteAr: string }>({ disabledFeatures: [], noteAr: '' })
   const [flagsError, setFlagsError] = useState('')
   const [busy, setBusy] = useState(false)
+  const registrations = useDataStore((s) => s.registrations)
+  const reg = registrations.find((r) => r.deviceId === c.deviceId) ?? null
   const activity = resolveClientActivity(c).id
   const included = modulesIncludedInActivity(activity)
   // ما يضيفه المفتاح فوق النشاط فقط — بلا تكرار لقسم مشمول أصلاً
   const extraOnly = c.extraModules.filter((m, i, a) => !included.includes(m) && a.indexOf(m) === i)
 
+  const hasFeatures = c.features.length > 0
   useEffect(() => {
-    if (!servicesAvailable) return
+    if (!servicesAvailable || !hasFeatures) return
     let cancelled = false
     setFlagsError('')
     void readCloudFlags(c.deviceId).then((f) => { if (!cancelled) setFlags(f) }).catch((e: unknown) => {
@@ -192,7 +208,7 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
       if (!cancelled) setFlagsError(e instanceof Error ? e.message : String(e))
     })
     return () => { cancelled = true }
-  }, [c.deviceId, servicesAvailable])
+  }, [c.deviceId, servicesAvailable, hasFeatures])
 
   async function toggleFlag(f: LicenseFeature, disable: boolean) {
     setBusy(true)
@@ -225,9 +241,6 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
     setBusy(false)
   }
 
-  const plan = (c.plan || 'trial') as LicensePlan
-  const knownPlan = isValidPlan(plan)
-
   return (
     <Modal
       open
@@ -248,12 +261,21 @@ function CustomerCard(props: { customer: CustomerView; busy: boolean; onClose: (
         <div className="card">
           <div className="card-title">الاشتراك</div>
           <ul className="plain" style={{ fontSize: 13.5 }}>
-            <li>الباقة: <b>{PLAN_LABELS_AR[plan] ?? (c.plan || '—')}</b> · ينتهي: <span className="mono">{c.plan ? (c.expiresAt ?? 'مدى الحياة') : '—'}</span></li>
+            <li>الباقة: <b>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? (c.plan || '—')}</b> · ينتهي: <span className="mono">{c.plan ? (c.expiresAt ?? 'مدى الحياة') : '—'}</span></li>
             <li>النشاط: <b>{activityDisplay(c.clientActivityId ?? c.activityId)}</b>
               {c.clientActivityId && c.activityId && c.clientActivityId !== c.activityId ? <span className="muted"> (المفتاح: {activityLabel(c.activityId)})</span> : null}</li>
-            {knownPlan ? <li>الفروع: {totalBranches(plan, c.extraBranches)} (منها {c.extraBranches} إضافي) · المستخدمون: {totalUsers(plan, c.extraUsers)}</li> : null}
+            {isValidPlan(c.plan) ? <li>الفروع: {totalBranches(c.plan, c.extraBranches)} (منها {c.extraBranches} إضافي) · المستخدمون: {totalUsers(c.plan, c.extraUsers)}</li> : null}
             <li>آخر ظهور: {fmtTime(c.lastSeenAt)} · آخر حدث: {c.lastActivityAt ?? '—'}</li>
             {c.email ? <li>البريد: {c.email}</li> : null}
+            {reg ? (
+              <>
+                {reg.phone ? <li>📞 الهاتف (من التسجيل): <span dir="ltr">{reg.phone}</span></li> : null}
+                {reg.email && reg.email !== c.email ? <li>📧 البريد (من التسجيل): {reg.email}</li> : null}
+                {reg.city || reg.street ? <li>📍 العنوان: {[reg.city, reg.street].filter(Boolean).join(' — ')}</li> : null}
+                <li>🧭 النشاط (من التسجيل): {reg.activityNameAr || reg.activityId || '—'}</li>
+                {reg.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(reg.pendingChanges).map(([k, v]) => `${pendingLabelAr(k)}: ${v}`).join(' · ')}</li> : null}
+              </>
+            ) : null}
             {c.message ? <li>رسالة على حسابه: {c.message}</li> : null}
           </ul>
         </div>

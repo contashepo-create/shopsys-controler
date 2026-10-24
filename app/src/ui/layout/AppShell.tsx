@@ -1,7 +1,7 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, KeyRound, BellRing, Headset,
-  Info, ScrollText, Settings, Lock, RefreshCw,
+  Info, ScrollText, Settings, Lock, RefreshCw, UserPlus, Bell,
 } from 'lucide-react'
 import { useSessionStore } from '../../stores/session.store.ts'
 import { useConfigStore } from '../../stores/config.store.ts'
@@ -12,6 +12,7 @@ import { UpdateBanner } from '../components/UpdateBanner.tsx'
 
 const NAV = [
   { to: '/dashboard', label: 'لوحة التحكم', icon: LayoutDashboard },
+  { to: '/registrations', label: 'التسجيلات الجديدة', icon: UserPlus },
   { to: '/customers', label: 'العملاء', icon: Users },
   { to: '/licenses', label: 'إصدار المفاتيح', icon: KeyRound },
   { to: '/notifications', label: 'الإشعارات', icon: BellRing },
@@ -25,7 +26,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const { lock, profile } = useSessionStore()
   const { botUsername, hasBotToken } = useConfigStore()
-  const { loading, lastSyncAt, refresh, customers, servicesAvailable, servicesError } = useDataStore()
+  const { loading, lastSyncAt, refresh, customers, servicesAvailable, servicesError, unreadNew, pendingRegistrations, lastNewIds } = useDataStore()
 
   return (
     <div className="app-shell">
@@ -39,10 +40,12 @@ export function AppShell() {
         </div>
         {NAV.map((item) => {
           const Icon = item.icon
+          const count = item.to === '/registrations' ? unreadNew : (item.to === '/customers' ? pendingRegistrations.length : 0)
           return (
             <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
               <Icon />
-              <span>{item.label}</span>
+              <span style={{ flex: 1 }}>{item.label}</span>
+              {count > 0 ? <span className="badge badge-warn" style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>{count > 99 ? '99+' : count}</span> : null}
             </NavLink>
           )
         })}
@@ -74,6 +77,13 @@ export function AppShell() {
         </header>
         <main className="content">
           <UpdateBanner />
+          {lastNewIds.length > 0 ? (
+            <div className="notice" style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.4)' }}>
+              <Bell size={16} color="var(--accent)" />
+              <span style={{ flex: 1 }}>🆕 <b>{lastNewIds.length === 1 ? 'عميل جديد' : `${lastNewIds.length} عملاء جدد`}</b> — سجّل{lastNewIds.length === 1 ? '' : 'وا'} الجهاز للتو ويحتاج{lastNewIds.length === 1 ? '' : 'ون'} تفعيلاً. لم يعد يفوتك أي تسجيل.</span>
+              <Link className="btn btn-sm btn-primary" to="/registrations">عرض{lastNewIds.length > 1 ? ` ${lastNewIds.length}` : ''} التسجيلات</Link>
+            </div>
+          ) : null}
           {!servicesAvailable ? (
             <div className="notice notice-warn">
               <span>

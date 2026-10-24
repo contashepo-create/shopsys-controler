@@ -96,20 +96,23 @@ export function IssueForm(props: {
     if (!defaults) return
     const today = new Date().toISOString().slice(0, 10)
     if (existing) {
-      const tag = `c:${existing.deviceId}:${existing.fingerprint ?? ''}`
+      const tag = `c:${existing.deviceId}:${existing.fingerprint ?? ''}:${existing.plan}:${existing.clientActivityId ?? ''}:${existing.customer}`
       if (prefilledFor === tag) return
       setPrefilledFor(tag)
-      if (existing.customer) { setCustomerName(existing.customer); setNameAuto(true) }
+      if (existing.customer && nameAuto) { setCustomerName(existing.customer); setNameAuto(true) }
       const act = resolveClientActivity(existing)
       setActivityId(act.id); setActivitySource(act.source); setActivityCustom(false)
       const validPlan = (['trial', 'basic', 'pro', 'lifetime'] as const).includes(existing.plan as LicensePlan)
+      const neverLicensed = !validPlan && !existing.fingerprint && !existing.licenseKey
       setPlan(validPlan ? existing.plan as LicensePlan : defaults.plan)
       // اشتراك ما زال له وقت (حتى لو معطّل) → نفس تاريخ انتهائه؛ منتهٍ أو بلا اشتراك → مدة الافتراضيات
       setDays(String(validPlan ? defaultRenewDays(existing.expiresAt, today, defaults.days) : defaults.days))
-      setExtraUsers(existing.extraUsers ? String(existing.extraUsers) : '')
-      setExtraBranches(existing.extraBranches ? String(existing.extraBranches) : '')
-      setFeatures(existing.features.filter((f) => !DERIVED_FEATURES.includes(f)))
-      setModules([...existing.extraModules])
+      const initUsers = neverLicensed ? defaults.extraUsers : existing.extraUsers
+      const initBranches = neverLicensed ? defaults.extraBranches : existing.extraBranches
+      setExtraUsers(initUsers ? String(initUsers) : '')
+      setExtraBranches(initBranches ? String(initBranches) : '')
+      setFeatures((neverLicensed ? defaults.features : existing.features).filter((f) => !DERIVED_FEATURES.includes(f)))
+      setModules([...(neverLicensed ? defaults.extraModules : existing.extraModules)])
       return
     }
     if (lookupState === 'new' || (lookupState === 'idle' && !fixed)) {
@@ -168,6 +171,7 @@ export function IssueForm(props: {
     if (!customerName.trim()) { toast('اسم العميل مطلوب', 'error'); return }
     if (!isActivityValueValid(activityId)) { toast('معرّف النشاط غير صالح', 'error'); return }
     if (lookupState === 'loading' || lookupState === 'error') { toast('انتظر التحقق من الجهاز أولاً', 'error'); return }
+    const isRenew = existing != null && Boolean(existing.plan || existing.fingerprint || existing.licenseKey)
     setBusy(true)
     try {
       const res = await issueLicense({
@@ -180,7 +184,7 @@ export function IssueForm(props: {
         extraBranches: branchesExtra,
         features: signedFeatures,
         extraModules: signedModules,
-      }, { renew: existing != null, burnFingerprint: burnPrevious ? existing?.fingerprint : null })
+      }, { renew: isRenew, burnFingerprint: burnPrevious ? existing?.fingerprint : null })
       setIssued(res)
       if (res.notes?.length) toast(res.notes[0], 'info')
       else toast('تم إصدار المفتاح ✓', 'ok')
@@ -243,12 +247,12 @@ export function IssueForm(props: {
             {!deviceValid ? 'يظهر للعميل في شاشة التفعيل داخل التطبيق'
               : lookupState === 'loading' ? '… جارٍ البحث عن الجهاز'
               : lookupState === 'error' ? <span style={{ color: 'var(--danger)' }}>⚠️ تعذر التحقق من الجهاز — {lookupError} <button type="button" className="btn btn-sm btn-ghost" onClick={() => { setLookupState('loading'); setLookupNonce((n) => n + 1) }}>إعادة المحاولة</button></span>
-              : existing ? `✓ عميل مسجَّل — ${existing.customer || 'بلا اسم'} · ${PLAN_LABELS_AR[existing.plan as LicensePlan] ?? existing.plan ?? 'بلا باقة'}${existing.expiresAt ? ` حتى ${existing.expiresAt}` : ''}`
+              : existing ? `✓ عميل مسجَّل — ${existing.customer || 'بلا اسم'} · ${PLAN_LABELS_AR[existing.plan as LicensePlan] ?? (existing.plan || 'بلا باقة')}${existing.expiresAt ? ` حتى ${existing.expiresAt}` : ''}`
               : defaultsFailed ? '⚠️ جهاز جديد — تعذر قراءة الافتراضيات المحفوظة فعُبّئ بقيم آمنة؛ راجع الباقة والميزات'
               : '✓ جهاز جديد — عُبّئ النموذج من الافتراضيات'}
           </span>
         </div>
-        <Field label="اسم العميل *" value={customerName} onChange={(v) => { setCustomerName(v); setNameAuto(false) }}
+        <Field label="اسم العميل *" value={customerName} onChange={(v) => { setCustomerName(v); setNameAuto(v.trim() === '') }}
           placeholder="بقالة النور — المنصورة"
           hint={existing?.customer && customerName === existing.customer ? '✓ كُتب تلقائياً من بيانات الجهاز' : undefined} />
       </div>

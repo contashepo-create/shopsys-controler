@@ -287,6 +287,26 @@ describe('lookupDevice / readGlobalDefaults', () => {
     expect((await actions.lookupDevice(DEV2))!.status).toBe('none')
   })
 
+  it('lookupDevice يلتقط العميل الجديد المسجّل عبر reg: حتى قبل إنشاء dev: لتعبئة نموذج الإصدار تلقائياً', async () => {
+    h.fake.seed('license', `reg:${DEV2}`, {
+      deviceId: DEV2,
+      shopName: 'عيادة الشفاء',
+      email: 'clinic@example.com',
+      activityId: 'clinic',
+      lastSeenAt: '2026-10-24T12:00:00Z',
+    })
+    const v = await actions.lookupDevice(DEV2)
+    expect(v).toMatchObject({
+      deviceId: DEV2,
+      customer: 'عيادة الشفاء',
+      email: 'clinic@example.com',
+      clientActivityId: 'clinic',
+      plan: '',
+      status: 'none',
+      fingerprint: null,
+    })
+  })
+
   it('readGlobalDefaults يقرأ settings:global ويسقط لقيم آمنة', async () => {
     expect(await actions.readGlobalDefaults()).toMatchObject({ plan: 'basic', days: 365 })
     h.fake.seed('license', 'settings:global', { plan: 'pro', days: 90, features: ['cloud_sync'], extraModules: ['pos', 7] })
