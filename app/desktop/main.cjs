@@ -576,7 +576,7 @@ const auth = createAuth({
  */
 const LOCKED_CHANNELS = new Set([
   'license:sign', 'secrets:set', 'cf:request', 'cf:test', 'cf:namespaces', 'cf:namespaceCreate',
-  'tg:send', 'tg:getMe', 'db:auditList', 'db:cacheGet', 'db:cachePut', 'app:openDataFolder', 'app:snapshotData',
+  'tg:send', 'tg:getMe', 'db:auditList', 'db:cacheGet', 'db:cachePut', 'app:openDataFolder', 'app:snapshotData', 'app:notify',
 ])
 const LOCKED_RESULT = { ok: false, code: 'locked', error: 'اللوحة مقفلة — أدخل كلمة المرور أولاً' }
 
@@ -718,6 +718,9 @@ function setupAutoUpdater() {
 
 /* ───────────────────────── IPC wiring ───────────────────────── */
 
+// الاحتفاظ بمراجع الإشعارات النشطة يمنع جامع القمامة (V8 GC) من إسقاط مستمع النقر قبل ضغط المستخدم
+const activeNotifications = new Set()
+
 const HANDLERS = {
   'app:version': () => app.getVersion(),
   'app:dataInfo': () => dataInfo(),
@@ -814,13 +817,19 @@ const HANDLERS = {
     writeJson('cache.json', cache)
     return { ok: true }
   },
-  'app:notify': ({ title, body }) => {
+  'app:notify': (payload = {}) => {
     try {
+      const { title, body } = payload || {}
       if (Notification.isSupported()) {
         const n = new Notification({ title: String(title ?? 'تنبيه').slice(0, 80), body: String(body ?? '').slice(0, 200), silent: false })
+        activeNotifications.add(n)
+        const cleanup = () => activeNotifications.delete(n)
         n.on('click', () => {
+          cleanup()
           if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); mainWindow.show() }
         })
+        n.on('close', cleanup)
+        setTimeout(cleanup, 60_000).unref?.()
         n.show()
       }
     } catch { /* ignore */ }
@@ -891,6 +900,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // مطابقة هوية الاختصار في ويندوز 10/11 (appId في electron-builder.yml) لتظهر إشعارات النظام reliably
+  if (process.platform === 'win32') app.setAppUserModelId('com.contashepo.shopsys-controler')
   registerIpc()
   snapshotData()      // تأمين بيانات المالك قبل أي شيء (لا يعطّل الإقلاع عند الفشل)
   setupAutoUpdater()

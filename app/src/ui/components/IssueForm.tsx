@@ -103,13 +103,16 @@ export function IssueForm(props: {
       const act = resolveClientActivity(existing)
       setActivityId(act.id); setActivitySource(act.source); setActivityCustom(false)
       const validPlan = (['trial', 'basic', 'pro', 'lifetime'] as const).includes(existing.plan as LicensePlan)
+      const neverLicensed = !validPlan && !existing.fingerprint && !existing.licenseKey
       setPlan(validPlan ? existing.plan as LicensePlan : defaults.plan)
       // اشتراك ما زال له وقت (حتى لو معطّل) → نفس تاريخ انتهائه؛ منتهٍ أو بلا اشتراك → مدة الافتراضيات
       setDays(String(validPlan ? defaultRenewDays(existing.expiresAt, today, defaults.days) : defaults.days))
-      setExtraUsers(existing.extraUsers ? String(existing.extraUsers) : '')
-      setExtraBranches(existing.extraBranches ? String(existing.extraBranches) : '')
-      setFeatures(existing.features.filter((f) => !DERIVED_FEATURES.includes(f)))
-      setModules([...existing.extraModules])
+      const initUsers = neverLicensed ? defaults.extraUsers : existing.extraUsers
+      const initBranches = neverLicensed ? defaults.extraBranches : existing.extraBranches
+      setExtraUsers(initUsers ? String(initUsers) : '')
+      setExtraBranches(initBranches ? String(initBranches) : '')
+      setFeatures((neverLicensed ? defaults.features : existing.features).filter((f) => !DERIVED_FEATURES.includes(f)))
+      setModules([...(neverLicensed ? defaults.extraModules : existing.extraModules)])
       return
     }
     if (lookupState === 'new' || (lookupState === 'idle' && !fixed)) {
@@ -168,6 +171,7 @@ export function IssueForm(props: {
     if (!customerName.trim()) { toast('اسم العميل مطلوب', 'error'); return }
     if (!isActivityValueValid(activityId)) { toast('معرّف النشاط غير صالح', 'error'); return }
     if (lookupState === 'loading' || lookupState === 'error') { toast('انتظر التحقق من الجهاز أولاً', 'error'); return }
+    const isRenew = existing != null && Boolean(existing.plan || existing.fingerprint || existing.licenseKey)
     setBusy(true)
     try {
       const res = await issueLicense({
@@ -180,7 +184,7 @@ export function IssueForm(props: {
         extraBranches: branchesExtra,
         features: signedFeatures,
         extraModules: signedModules,
-      }, { renew: existing != null, burnFingerprint: burnPrevious ? existing?.fingerprint : null })
+      }, { renew: isRenew, burnFingerprint: burnPrevious ? existing?.fingerprint : null })
       setIssued(res)
       if (res.notes?.length) toast(res.notes[0], 'info')
       else toast('تم إصدار المفتاح ✓', 'ok')

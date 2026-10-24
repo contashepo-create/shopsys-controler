@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useDataStore } from '../../stores/data.store.ts'
 import { bridge } from '../../data/bridge.ts'
-import { filterRegistrations, PENDING_LABELS, type RegistrationRecord } from '../../core/registrations.ts'
+import { filterRegistrations, PENDING_LABELS, platformLabelAr, whatsappUrl, type RegistrationRecord } from '../../core/registrations.ts'
+import type { CustomerView } from '../../core/customers.ts'
 import { Btn, Badge, EmptyState, Modal, useToast, ConfirmDialog } from '../components/ui.tsx'
 import { IssueForm } from '../components/IssueForm.tsx'
-import { Users, Phone, Mail, MapPin, Activity, Copy, Trash2, KeyRound, Search, RefreshCw } from 'lucide-react'
+import { Users, Phone, Mail, MapPin, Activity, Copy, Trash2, KeyRound, Search, RefreshCw, MessageCircle } from 'lucide-react'
 
 const fmtDate = (iso: string) => iso ? iso.slice(0, 16).replace('T', ' ') : '—'
 
@@ -136,7 +137,7 @@ export function RegistrationsPage() {
                   {r.email ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Mail size={12} /> <span>{r.email}</span> <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', fontSize: 11 }} onClick={() => void copy(r.email, 'البريد')}><Copy size={10} /> نسخ</button></div> : null}
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><MapPin size={12} /> {r.city || ''}{r.city && r.street ? ' — ' : ''}{r.street || 'بلا عنوان'} {r.countryCode ? `(${r.countryCode})` : ''}</div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Activity size={12} /> {r.activityNameAr || r.activityId || 'غير محدد'} {r.activityId ? <span className="muted">({r.activityId})</span> : null}</div>
-                  <div className="muted" style={{ fontSize: 11.5 }}>التسجيل: {fmtDate(r.registeredAt)} · آخر ظهور: {fmtDate(r.lastSeenAt)} · بلاغات: {r.reports}{r.appVersion ? ` · إصدار ${r.appVersion}` : ''}{r.platform ? ` · ${r.platform}` : ''}</div>
+                  <div className="muted" style={{ fontSize: 11.5 }}>التسجيل: {fmtDate(r.registeredAt)} · آخر ظهور: {fmtDate(r.lastSeenAt)} · بلاغات: {r.reports}{r.appVersion ? ` · إصدار ${r.appVersion}` : ''}{r.platform ? ` · ${platformLabelAr(r.platform)}` : ''}</div>
                   {r.pendingChanges ? (
                     <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }}>
                       ⚠️ بيانات جديدة لم تُعتمد من بلاغ لاحق ({r.pendingAt ? fmtDate(r.pendingAt) : ''}): {Object.entries(r.pendingChanges).map(([k, v]) => `${PENDING_LABELS[k] ?? k}: ${v}`).join(' · ')}
@@ -147,7 +148,10 @@ export function RegistrationsPage() {
                 <div className="row" style={{ justifyContent: 'flex-start', flexWrap: 'wrap' }}>
                   <Btn size="sm" kind="primary" onClick={() => setIssueFor(r)}><KeyRound size={12} /> إصدار مفتاح</Btn>
                   <Btn size="sm" onClick={() => void copy(r.deviceId, 'المعرّف')}><Copy size={12} /> نسخ المعرّف</Btn>
-                  {r.phone ? <Btn size="sm" onClick={() => window.open(`tel:${r.phone}`, '_blank')}><Phone size={12} /> اتصال</Btn> : null}
+                  {(() => {
+                    const wa = whatsappUrl(r.phone, r.countryCode)
+                    return wa ? <Btn size="sm" onClick={() => window.open(wa, '_blank', 'noopener,noreferrer')}><MessageCircle size={12} /> واتساب</Btn> : null
+                  })()}
                   <Btn size="sm" kind="danger" onClick={() => setDeleteFor(r)}><Trash2 size={12} /> حذف</Btn>
                 </div>
               </div>
@@ -161,8 +165,8 @@ export function RegistrationsPage() {
       {selected ? <RegistrationDetailModal record={selected} licensed={devLicensed.get(selected.deviceId) ?? false} onClose={() => setSelected(null)} onIssue={() => { setSelected(null); setIssueFor(selected) }} /> : null}
 
       {issueFor ? (
-        <Modal open wide title={`إصدار مفتاح — ${issueFor.shopName || issueFor.ownerName || issueFor.deviceId}`} sub={issueFor.deviceId} onClose={() => setIssueFor(null)}>
-          <RegistrationIssueForm record={issueFor} onIssued={async () => { await refresh(); setIssueFor(null) }} onClose={() => setIssueFor(null)} />
+        <Modal open wide dismissible={false} title={`إصدار مفتاح — ${issueFor.shopName || issueFor.ownerName || issueFor.deviceId}`} sub={issueFor.deviceId} onClose={() => setIssueFor(null)}>
+          <RegistrationIssueForm record={issueFor} onIssued={async () => { await refresh() }} onClose={() => setIssueFor(null)} />
         </Modal>
       ) : null}
 
@@ -200,7 +204,7 @@ function RegistrationDetailModal(props: { record: RegistrationRecord; licensed: 
             <li>النشاط: <b>{r.activityNameAr || '—'}</b> {r.activityId ? <span className="muted">({r.activityId})</span> : null}</li>
             {r.doctorSpecialty ? <li>التخصص: {r.doctorSpecialty}</li> : null}
             <li>الخطة: {r.plan || '—'} · المحاسبة: {r.accountingMode || '—'}</li>
-            <li>المنصة: {r.platform || '—'} · الإصدار: {r.appVersion || '—'}</li>
+            <li>المنصة: {platformLabelAr(r.platform)} · الإصدار: {r.appVersion || '—'}</li>
             <li>السنة المالية: {r.fiscalYearName || '—'} {r.fiscalYearStart ? `(${r.fiscalYearStart} → ${r.fiscalYearEnd})` : ''}</li>
           </ul>
         </div>
@@ -221,42 +225,53 @@ function RegistrationDetailModal(props: { record: RegistrationRecord; licensed: 
 
 function RegistrationIssueForm(props: { record: RegistrationRecord; onIssued: () => void | Promise<void>; onClose: () => void }) {
   const r = props.record
-  // نمرّر بيانات التسجيل كـ customer وهمي لـ IssueForm عبر بناء CustomerView مصغر
-  const toast = useToast()
-  // نبني عميل وهمي ليعبئ IssueForm تلقائياً
-  const syntheticCustomer = useMemo(() => ({
-    deviceId: r.deviceId,
-    customer: r.shopName || r.ownerName || 'عميل جديد',
-    email: r.email || null,
-    plan: '',
-    expiresAt: null,
-    activityId: r.activityId ?? null,
-    clientActivityId: r.activityId ?? r.activityNameAr ?? null,
-    features: [] as string[],
-    extraUsers: 0,
-    extraBranches: 0,
-    extraModules: [] as string[],
-    fingerprint: null,
-    licenseKey: null,
-    licenseIssuedAt: null,
-    lastSeenAt: r.lastSeenAt ?? null,
-    status: 'none' as const,
-    lastActivityAt: null,
-    lastSupportAt: null,
-    supportUnread: false,
-    message: '',
-  }), [r])
+  const customers = useDataStore((s) => s.customers)
+  // إن كان للجهاز سجل عميل موجود (رخصة سابقة/أقسام/بصمة) نحافظ عليه ونكمّل الحقول الناقصة من التسجيل؛
+  // ولا نمرّر activityNameAr كمعرّف نشاط أبداً حتى لا يُوقَّع نص عربي داخل المفتاح بدل المعرّف البرمجي.
+  const targetCustomer = useMemo<CustomerView>(() => {
+    const existing = customers.find((c) => c.deviceId === r.deviceId)
+    if (existing) {
+      return {
+        ...existing,
+        customer: existing.customer || r.shopName || r.ownerName || 'عميل جديد',
+        email: existing.email || r.email || null,
+        clientActivityId: existing.clientActivityId ?? r.activityId ?? null,
+      }
+    }
+    return {
+      deviceId: r.deviceId,
+      customer: r.shopName || r.ownerName || 'عميل جديد',
+      email: r.email || null,
+      plan: '',
+      expiresAt: null,
+      activityId: null,
+      clientActivityId: r.activityId ?? null,
+      features: [],
+      extraUsers: 0,
+      extraBranches: 0,
+      extraModules: [],
+      fingerprint: null,
+      licenseKey: null,
+      licenseIssuedAt: null,
+      lastSeenAt: r.lastSeenAt ?? null,
+      status: 'none',
+      lastActivityAt: null,
+      lastSupportAt: null,
+      supportUnread: false,
+      message: '',
+    }
+  }, [customers, r])
 
-  // نعرض IssueForm مع ملاحظة ببيانات التسجيل
+  const summaryInfo = [r.shopName, r.ownerName, r.phone, r.email, r.activityNameAr || r.activityId].filter(Boolean).join(' — ')
+
   return (
     <div>
-      <div className="notice notice-info" style={{ display: 'block', marginBlockEnd: 10 }}>
-        📋 بيانات من التسجيل: <b>{r.shopName}</b> — {r.ownerName} — {r.phone} — {r.email} — {r.activityNameAr || r.activityId}
-      </div>
-      <IssueForm customer={syntheticCustomer as any} onIssued={async () => {
-        toast(`✅ صدر المفتاح لـ ${r.shopName || r.deviceId} — أُرسل للعميل تلقائياً؟ اضغط «إرسال للعميل» لإيصاله في إشعاراته`, 'ok')
-        await props.onIssued()
-      }} onClose={props.onClose} />
+      {summaryInfo ? (
+        <div className="notice notice-info" style={{ display: 'block', marginBlockEnd: 10 }}>
+          📋 بيانات من التسجيل: <b>{summaryInfo}</b>
+        </div>
+      ) : null}
+      <IssueForm customer={targetCustomer} onIssued={async () => { await props.onIssued() }} onClose={props.onClose} />
     </div>
   )
 }

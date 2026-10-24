@@ -175,7 +175,11 @@ function computeRegistrationAlerts(
       const first = pendingRegistrations.find((r) => notifyCandidates.includes(r.deviceId))
       const title = `🆕 تسجيل عميل جديد${notifyCandidates.length > 1 ? ` (+${notifyCandidates.length - 1})` : ''}`
       const body = first ? `${first.shopName || first.ownerName || 'عميل جديد'} — ${first.phone || first.email || first.deviceId}` : `${notifyCandidates.length} عميل جديد`
-      if (typeof window !== 'undefined' && 'Notification' in window) {
+      // في سطح المكتب (Electron) نرسل إشعار ويندوز الأصلي مرة واحدة فقط عبر العملية الرئيسية؛
+      // وفي المتصفح نستخدم Web Notification API حتى لا يتكرر الإشعار 3 مرات فوق بعضه.
+      if (bridge.runtime === 'electron') {
+        try { void bridge.app.notify(title, body).catch(() => {}) } catch { /* أفضل جهد */ }
+      } else if (typeof window !== 'undefined' && 'Notification' in window) {
         if (Notification.permission === 'granted') {
           new Notification(title, { body })
         } else if (Notification.permission !== 'denied') {
@@ -183,12 +187,6 @@ function computeRegistrationAlerts(
             if (perm === 'granted') new Notification(title, { body })
           })
         }
-      }
-      try { void bridge.app.notify(title, body) } catch { /* أفضل جهد */ }
-      if (typeof window !== 'undefined') {
-        const w = window as unknown as { controlerDesktop?: Record<string, unknown> }
-        const legacy = w.controlerDesktop?.['app:notify'] as ((p: { title: string; body: string }) => Promise<unknown>) | undefined
-        if (typeof legacy === 'function') void legacy({ title, body }).catch(() => {})
       }
       playNewRegistrationSound()
       try {

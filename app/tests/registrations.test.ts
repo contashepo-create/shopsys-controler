@@ -9,7 +9,7 @@ vi.mock('../src/data/bridge.ts', async () => {
   return { bridge: h.fake.bridge, isDesktop: () => true, requireDesktop: () => {} }
 })
 
-import { parseRegistrationRecord, filterRegistrations, hasLicense, platformLabelAr } from '../src/core/registrations.ts'
+import { parseRegistrationRecord, filterRegistrations, hasLicense, platformLabelAr, whatsappUrl } from '../src/core/registrations.ts'
 import { useDataStore, __resetRegistrationsState, POLL_DEFAULT_MS, FOCUS_COOLDOWN_MS } from '../src/stores/data.store.ts'
 
 describe('registrations — parseRegistrationRecord', () => {
@@ -70,6 +70,17 @@ describe('registrations — parseRegistrationRecord', () => {
     expect(platformLabelAr('desktop')).toBe('سطح المكتب')
     expect(platformLabelAr('web')).toBe('المتصفح')
     expect(platformLabelAr(undefined)).toBe('—')
+  })
+
+  it('whatsappUrl يبني رابط https://wa.me متوافقاً مع أمان Electron', () => {
+    expect(whatsappUrl('01012345678')).toBe('https://wa.me/201012345678')
+    expect(whatsappUrl('01012345678', 'EG')).toBe('https://wa.me/201012345678')
+    expect(whatsappUrl('0501234567', 'SA')).toBe('https://wa.me/966501234567')
+    expect(whatsappUrl('+20 101-234-5678')).toBe('https://wa.me/201012345678')
+    expect(whatsappUrl('00201012345678')).toBe('https://wa.me/201012345678')
+    expect(whatsappUrl('123')).toBeNull()
+    expect(whatsappUrl('')).toBeNull()
+    expect(whatsappUrl(undefined)).toBeNull()
   })
 
   it('فلترة بالبحث', () => {
@@ -237,6 +248,27 @@ describe('registrations — الفحص التفاضلي الخفيف وحماي�
       expect(h.fake.stats.gets).toBe(0)
     } finally {
       stop()
+    }
+  })
+
+  it('في بيئة Electron يُرسل إشعار نظام واحد عبر bridge.app.notify دون تكرار window.Notification', async () => {
+    await useDataStore.getState().refresh()
+    const webNotifySpy = vi.fn()
+    const origNotification = (window as unknown as { Notification?: unknown }).Notification
+    Object.defineProperty(window, 'Notification', {
+      configurable: true,
+      value: Object.assign(webNotifySpy, { permission: 'granted', requestPermission: async () => 'granted' }),
+    })
+    const appNotifySpy = vi.spyOn(h.fake.bridge.app, 'notify')
+    try {
+      const NEW_ID = 'SHOP-8888-7777-6666'
+      h.fake.seed('license', `reg:${NEW_ID}`, { deviceId: NEW_ID, shopName: 'صيدلية السلام', lastSeenAt: '2026-10-24T14:00:00Z' })
+      await useDataStore.getState().pollRegistrations()
+      expect(appNotifySpy).toHaveBeenCalledTimes(1)
+      expect(webNotifySpy).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(window, 'Notification', { configurable: true, value: origNotification })
+      appNotifySpy.mockRestore()
     }
   })
 })

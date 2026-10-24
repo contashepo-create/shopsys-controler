@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useSessionStore, applyTheme } from './stores/session.store.ts'
 import { useDataStore } from './stores/data.store.ts'
+import { isDesktop } from './data/bridge.ts'
 import { ToastProvider } from './ui/components/ui.tsx'
 import { AppShell } from './ui/layout/AppShell.tsx'
 import { SetupPage } from './ui/pages/SetupPage.tsx'
@@ -49,8 +50,8 @@ export function App() {
     if (status === 'unlocked') {
       void loadConfig().then(() => refreshData())
       const stop = useDataStore.getState().startPolling()
-      // طلب إذن الإشعارات مرة واحدة
-      if ('Notification' in window && Notification.permission === 'default') {
+      // طلب إذن الإشعارات في المتصفح فقط (سطح المكتب يستخدم Notification الأصلية في main.cjs)
+      if (!isDesktop() && 'Notification' in window && Notification.permission === 'default') {
         void Notification.requestPermission().catch(() => {})
       }
       return () => stop()

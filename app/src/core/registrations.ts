@@ -136,6 +136,31 @@ export function fullAddress(r: Pick<RegistrationRecord, 'city' | 'street'>): str
   return [r.city, r.street].filter(Boolean).join(' — ') || '—'
 }
 
+const DIAL_BY_COUNTRY: Record<string, string> = {
+  EG: '20', SA: '966', AE: '971', KW: '965', QA: '974', BH: '973', OM: '968',
+  JO: '962', IQ: '964', LB: '961', SY: '963', PS: '970', YE: '967', LY: '218',
+  TN: '216', DZ: '213', MA: '212', SD: '249',
+}
+
+/** رابط واتساب آمن (https://) متوافق مع سياسة أمان نوافذ Electron */
+export function whatsappUrl(phone: string | undefined, countryCode?: string): string | null {
+  if (!phone) return null
+  const trimmed = phone.trim()
+  let digits = trimmed.replace(/\D/g, '')
+  if (!digits) return null
+  if (trimmed.startsWith('+')) {
+    // دولي صريح مثل +201012345678
+  } else if (digits.startsWith('00')) {
+    digits = digits.slice(2)
+  } else if (digits.startsWith('0')) {
+    const cc = (countryCode ?? '').trim().toUpperCase()
+    const dial = DIAL_BY_COUNTRY[cc] ?? (digits.length === 11 && /^01[0125]\d{8}$/.test(digits) ? '20' : '')
+    if (dial) digits = dial + digits.slice(1)
+  }
+  if (digits.length < 8 || digits.length > 15) return null
+  return `https://wa.me/${digits}`
+}
+
 /** ترتيب حسب الأحدث أولاً */
 export function sortRegistrationsByNewest(list: readonly RegistrationRecord[]): RegistrationRecord[] {
   return [...list].sort((a, b) => String(b.lastSeenAt ?? '').localeCompare(String(a.lastSeenAt ?? '')))
