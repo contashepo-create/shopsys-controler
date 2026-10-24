@@ -9,7 +9,7 @@ vi.mock('../src/data/bridge.ts', async () => {
   return { bridge: h.fake.bridge, isDesktop: () => true, requireDesktop: () => {} }
 })
 
-import { parseRegistrationRecord, filterRegistrations, hasLicense, platformLabelAr, whatsappUrl } from '../src/core/registrations.ts'
+import { parseRegistrationRecord, filterRegistrations, hasLicense, platformLabelAr, pendingLabelAr, whatsappUrl } from '../src/core/registrations.ts'
 import { useDataStore, __resetRegistrationsState, POLL_DEFAULT_MS, FOCUS_COOLDOWN_MS } from '../src/stores/data.store.ts'
 
 describe('registrations — parseRegistrationRecord', () => {
@@ -44,19 +44,28 @@ describe('registrations — parseRegistrationRecord', () => {
     expect(parseRegistrationRecord(null)).toBeNull()
   })
 
-  it('يتسامح مع حقول تالفة ويُنقّي النصوص', () => {
+  it('يتسامح مع حقول تالفة ويُنقّي النصوص ويمنع تلوث النموذج الأولي وانتحال الهوية', () => {
     const raw = JSON.stringify({
       deviceId: 'SHOP-XXXX-YYYY-ZZZZ',
-      shopName: '  متجر <script>  ',
+      shopName: '  متجر <script>\nسطر مزيف  ',
       phone: '010 123',
       email: 'not-an-email',
-      pendingChanges: { shopName: 'اسم جديد', phone: '0111111111' },
+      reports: -5,
+      pendingChanges: { shopName: 'اسم جديد', phone: '0111111111', constructor: 'bad', empty: '   ' },
       pendingAt: '2026-10-24T11:00:00Z',
     })
-    const rec = parseRegistrationRecord(raw)!
-    expect(rec.shopName).toBe('متجر script')
+    const rec = parseRegistrationRecord(raw, 'SHOP-XXXX-YYYY-ZZZZ')!
+    expect(rec.shopName).toBe('متجر script سطر مزيف')
     expect(rec.email).toBe('')
+    expect(rec.reports).toBe(1)
     expect(rec.pendingChanges).toEqual({ shopName: 'اسم جديد', phone: '0111111111' })
+    expect(rec.registeredAt).toBe('') // لا يختلق تاريخ اليوم للسجلات الفارغة
+
+    // رفض سجل يختلف معرّفه الداخلي عن مفتاح KV
+    expect(parseRegistrationRecord(raw, 'SHOP-1111-2222-3333')).toBeNull()
+    // حماية Object.prototype في التسميات
+    expect(pendingLabelAr('toString')).toBe('toString')
+    expect(pendingLabelAr('shopName')).toBe('المنشأة')
   })
 
   it('hasLicense يميّز سجل بلا رخصة', () => {
@@ -72,8 +81,9 @@ describe('registrations — parseRegistrationRecord', () => {
     expect(platformLabelAr(undefined)).toBe('—')
   })
 
-  it('whatsappUrl يبني رابط https://wa.me متوافقاً مع أمان Electron', () => {
+  it('whatsappUrl يبني رابط https://wa.me متوافقاً مع أمان Electron ويدعم الأرقام العربية', () => {
     expect(whatsappUrl('01012345678')).toBe('https://wa.me/201012345678')
+    expect(whatsappUrl('٠١٠١٢٣٤٥٦٧٨')).toBe('https://wa.me/201012345678')
     expect(whatsappUrl('01012345678', 'EG')).toBe('https://wa.me/201012345678')
     expect(whatsappUrl('0501234567', 'SA')).toBe('https://wa.me/966501234567')
     expect(whatsappUrl('+20 101-234-5678')).toBe('https://wa.me/201012345678')
@@ -83,13 +93,14 @@ describe('registrations — parseRegistrationRecord', () => {
     expect(whatsappUrl(undefined)).toBeNull()
   })
 
-  it('فلترة بالبحث', () => {
+  it('فلترة بالبحث (شاملة الأرقام العربية)', () => {
     const list = [
-      { deviceId: 'SHOP-AAAA-BBBB-CCCC', shopName: 'محل النور', ownerName: 'أحمد', phone: '0101', email: '', city: 'المنصورة', street: '', activityNameAr: 'سوبر ماركت', registeredAt: '', firstSeenAt: '', lastSeenAt: '', reports: 1 } as any,
+      { deviceId: 'SHOP-AAAA-BBBB-CCCC', shopName: 'محل النور', ownerName: 'أحمد', phone: '٠١٠١٩٩٩', email: '', city: 'المنصورة', street: '', activityNameAr: 'سوبر ماركت', registeredAt: '', firstSeenAt: '', lastSeenAt: '', reports: 1 } as any,
       { deviceId: 'SHOP-XXXX-YYYY-ZZZZ', shopName: 'صيدلية الشفاء', ownerName: 'محمد', phone: '0111', email: '', city: 'القاهرة', street: '', activityNameAr: 'صيدلية', registeredAt: '', firstSeenAt: '', lastSeenAt: '', reports: 1 } as any,
     ]
     expect(filterRegistrations(list, 'النور')).toHaveLength(1)
-    expect(filterRegistrations(list, '0111')).toHaveLength(1)
+    expect(filterRegistrations(list, '0101999')).toHaveLength(1)
+    expect(filterRegistrations(list, '٠١١١')).toHaveLength(1)
     expect(filterRegistrations(list, '')).toHaveLength(2)
     expect(filterRegistrations(list, 'SHOP-AAAA')).toHaveLength(1)
   })
@@ -270,5 +281,47 @@ describe('registrations — الفحص التفاضلي الخفيف وحماي�
       Object.defineProperty(window, 'Notification', { configurable: true, value: origNotification })
       appNotifySpy.mockRestore()
     }
+  })
+
+  it('يدمج المسجلين الجدد (reg: بلا dev:) داخل customers بحالة بدون اشتراك (status=none)', async () => {
+    const REG_ONLY = 'SHOP-5555-6666-7777'
+    h.fake.seed('license', `reg:${REG_ONLY}`, {
+      deviceId: REG_ONLY,
+      shopName: 'معرض طيبة',
+      email: 'taiba@shop.eg',
+      activityId: 'electronics',
+      lastSeenAt: '2026-10-24T09:30:00Z',
+    })
+    await useDataStore.getState().refresh()
+    const c = useDataStore.getState().customers.find((x) => x.deviceId === REG_ONLY)!
+    expect(c).toBeTruthy()
+    expect(c).toMatchObject({
+      customer: 'معرض طيبة',
+      email: 'taiba@shop.eg',
+      clientActivityId: 'electronics',
+      status: 'none',
+      plan: '',
+      lastSeenAt: '2026-10-24T09:30:00Z',
+    })
+  })
+
+  it('الذرّية في pollRegistrations: فشل قراءة dev: المؤقت لا يلوث knownRegCache ويعاد التنبيه عند تعافي الشبكة', async () => {
+    await useDataStore.getState().refresh()
+    const notifySpy = vi.spyOn(h.fake.bridge.app, 'notify')
+    const NEW_ID = 'SHOP-2222-3333-4444'
+    h.fake.seed('license', `reg:${NEW_ID}`, { deviceId: NEW_ID, shopName: 'مخبز البركة', lastSeenAt: '2026-10-24T15:00:00Z' })
+    h.fake.failGet.add(`license:dev:${NEW_ID}`)
+
+    // الدورة الأولى تفشل عند قراءة dev: ← لا يجوز تسجيل المفتاح كمقروء في الذاكرة
+    await useDataStore.getState().pollRegistrations()
+    expect(useDataStore.getState().registrations).toHaveLength(0)
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    // تتعافى الشبكة في الدورة التالية ← يُقرأ ويُنبَّه بنجاح
+    h.fake.failGet.delete(`license:dev:${NEW_ID}`)
+    await useDataStore.getState().pollRegistrations()
+    expect(useDataStore.getState().registrations).toHaveLength(1)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    notifySpy.mockRestore()
   })
 })

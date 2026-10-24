@@ -59,7 +59,7 @@ export function DashboardPage() {
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ fontSize: 28 }}>🎉</div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 800 }}>لديك {kpis.pending} عميل جديد سجّل الآن!</div>
+              <div style={{ fontWeight: 800 }}>لديك {kpis.pending === 1 ? 'عميل جديد سجّل' : `${kpis.pending} عملاء جدد سجّلوا`} الآن!</div>
               <div className="muted" style={{ fontSize: 12.5 }}>ثبّت التطبيق وأرسل بياناته تلقائياً — يظهر هنا فوراً. فعّله بضغطة ليبدأ العمل.</div>
             </div>
             <button className="btn btn-primary" onClick={() => navigate('/registrations')}><UserPlus size={14} /> عرض التسجيلات الجديدة</button>
@@ -71,7 +71,7 @@ export function DashboardPage() {
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{r.shopName || r.ownerName || 'عميل جديد'}</div>
                   <div className="muted" style={{ fontSize: 11.5 }}>{r.phone || r.email || r.deviceId.slice(0, 14)}</div>
                 </div>
-                <button className="btn btn-sm btn-primary" onClick={() => navigate('/registrations')}>تفعيل</button>
+                <button className="btn btn-sm btn-primary" onClick={() => navigate(`/registrations?issue=${encodeURIComponent(r.deviceId)}`)}>تفعيل</button>
               </div>
             ))}
           </div>
@@ -96,7 +96,7 @@ export function DashboardPage() {
                         <div style={{ fontWeight: 700 }}>{c.customer || '—'}</div>
                         <div className="mono muted">{c.deviceId}</div>
                       </td>
-                      <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? c.plan ?? '—'}</td>
+                      <td>{PLAN_LABELS_AR[c.plan as LicensePlan] ?? (c.plan || '—')}</td>
                       <td><StatusBadge status={c.status} /></td>
                       <td className="muted">{seenKey(c) || '—'}</td>
                     </tr>

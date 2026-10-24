@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useDataStore } from '../../stores/data.store.ts'
 import { bridge } from '../../data/bridge.ts'
-import { filterRegistrations, PENDING_LABELS, platformLabelAr, whatsappUrl, type RegistrationRecord } from '../../core/registrations.ts'
+import { filterRegistrations, pendingLabelAr, platformLabelAr, whatsappUrl, type RegistrationRecord } from '../../core/registrations.ts'
 import type { CustomerView } from '../../core/customers.ts'
 import { Btn, Badge, EmptyState, Modal, useToast, ConfirmDialog } from '../components/ui.tsx'
 import { IssueForm } from '../components/IssueForm.tsx'
@@ -11,6 +12,7 @@ const fmtDate = (iso: string) => iso ? iso.slice(0, 16).replace('T', ' ') : '—
 
 export function RegistrationsPage() {
   const toast = useToast()
+  const [params, setParams] = useSearchParams()
   const { registrations, pendingRegistrations, refresh, pollRegistrations, loading, unreadNew, markRegistrationsSeen } = useDataStore()
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<'all' | 'new' | 'licensed'>('all')
@@ -22,11 +24,25 @@ export function RegistrationsPage() {
     if (!useDataStore.getState().lastSyncAt) void refresh()
     else void pollRegistrations(30_000)
   }, [refresh, pollRegistrations])
+
+  // فتح نافذة الإصدار مباشرة عند القدوم من لوحة التحكم (?issue=<deviceId>)
+  const issueParam = params.get('issue')
   useEffect(() => {
-    // عند فتح الصفحة نعلّم التسجيلات كمقروءة بعد ثانيتين (حتى يراها المستخدم)
+    if (!issueParam) return
+    const target = registrations.find((r) => r.deviceId === issueParam)
+    if (target) {
+      setIssueFor(target)
+      setParams({}, { replace: true })
+    }
+  }, [issueParam, registrations, setParams])
+
+  useEffect(() => {
+    // نعلّم التسجيلات كمقروءة بعد لحظة قصيرة كلما وُجد غير مقروء والنافذة ظاهرة (يشمل ما يصل أثناء بقاء الصفحة مفتوحة)
+    if (unreadNew <= 0) return
+    if (typeof document !== 'undefined' && document.hidden) return
     const t = setTimeout(() => markRegistrationsSeen(), 1200)
     return () => clearTimeout(t)
-  }, [markRegistrationsSeen])
+  }, [markRegistrationsSeen, unreadNew])
 
   const devLicensed = useMemo(() => {
     const m = new Map<string, boolean>()
@@ -140,7 +156,7 @@ export function RegistrationsPage() {
                   <div className="muted" style={{ fontSize: 11.5 }}>التسجيل: {fmtDate(r.registeredAt)} · آخر ظهور: {fmtDate(r.lastSeenAt)} · بلاغات: {r.reports}{r.appVersion ? ` · إصدار ${r.appVersion}` : ''}{r.platform ? ` · ${platformLabelAr(r.platform)}` : ''}</div>
                   {r.pendingChanges ? (
                     <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }}>
-                      ⚠️ بيانات جديدة لم تُعتمد من بلاغ لاحق ({r.pendingAt ? fmtDate(r.pendingAt) : ''}): {Object.entries(r.pendingChanges).map(([k, v]) => `${PENDING_LABELS[k] ?? k}: ${v}`).join(' · ')}
+                      ⚠️ بيانات جديدة لم تُعتمد من بلاغ لاحق ({r.pendingAt ? fmtDate(r.pendingAt) : ''}): {Object.entries(r.pendingChanges).map(([k, v]) => `${pendingLabelAr(k)}: ${v}`).join(' · ')}
                     </div>
                   ) : null}
                 </div>
@@ -215,7 +231,7 @@ function RegistrationDetailModal(props: { record: RegistrationRecord; licensed: 
           <li>آخر بلاغ: {fmtDate(r.lastSeenAt)}</li>
           <li>التسجيل: {fmtDate(r.registeredAt)}</li>
           <li>عدد البلاغات: {r.reports}</li>
-          {r.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(r.pendingChanges).map(([k, v]) => `${PENDING_LABELS[k] ?? k}: ${v}`).join(' · ')} (من {r.pendingAt ? fmtDate(r.pendingAt) : '—'})</li> : null}
+          {r.pendingChanges ? <li style={{ color: 'var(--danger)' }}>⚠️ تحديث معلّق: {Object.entries(r.pendingChanges).map(([k, v]) => `${pendingLabelAr(k)}: ${v}`).join(' · ')} (من {r.pendingAt ? fmtDate(r.pendingAt) : '—'})</li> : null}
         </ul>
         <div className="mono muted" style={{ fontSize: 11, marginBlockStart: 8 }}>{r.deviceId}</div>
       </div>

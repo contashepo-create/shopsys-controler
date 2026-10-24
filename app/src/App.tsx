@@ -48,13 +48,21 @@ export function App() {
   useEffect(() => { void init() }, [init])
   useEffect(() => {
     if (status === 'unlocked') {
-      void loadConfig().then(() => refreshData())
-      const stop = useDataStore.getState().startPolling()
+      let cancelled = false
+      let stopPoll: (() => void) | null = null
+      void loadConfig().then(() => {
+        if (cancelled) return
+        void refreshData()
+        stopPoll = useDataStore.getState().startPolling()
+      })
       // طلب إذن الإشعارات في المتصفح فقط (سطح المكتب يستخدم Notification الأصلية في main.cjs)
       if (!isDesktop() && 'Notification' in window && Notification.permission === 'default') {
         void Notification.requestPermission().catch(() => {})
       }
-      return () => stop()
+      return () => {
+        cancelled = true
+        stopPoll?.()
+      }
     }
   }, [status, loadConfig, refreshData])
 

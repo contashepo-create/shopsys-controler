@@ -35,45 +35,64 @@ export const REG_PREFIX = 'reg:'
 export const REG_MAX_BYTES = 8192
 
 const DEVICE_RE = /^SHOP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/
+const UNSAFE_OBJ_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 export function isValidDeviceId(v: string): boolean {
   return DEVICE_RE.test(v)
 }
 
+/** تحويل الأرقام العربية المشرقية والفارسية (٠-٩ / ۰-۹) إلى أرقام لاتينية (0-9) */
+export function normalizeDigits(v: string): string {
+  return v
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+}
+
 function cleanText(v: unknown, max: number): string {
   if (typeof v !== 'string') return ''
   return v
+    .replace(/[\r\n\t]+/g, ' ')
     // oxlint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
     .replace(/[<>]/g, '')
     .replace(/[\u200B\u2060\uFEFF]/g, '')
+    .replace(/\s{2,}/g, ' ')
     .trim()
     .slice(0, max)
 }
 
-export function parseRegistrationRecord(raw: string | null): RegistrationRecord | null {
+/**
+ * تحليل سجل التسجيل بأمان.
+ * @param expectedDeviceId إن مُرّر من مفتاح KV (`reg:<id>`)، يُشترط تطابقه لمنع انتحال جهاز آخر.
+ */
+export function parseRegistrationRecord(raw: string | null, expectedDeviceId?: string): RegistrationRecord | null {
   if (!raw) return null
   try {
     const o = JSON.parse(raw) as Record<string, unknown>
     if (!o || typeof o !== 'object' || Array.isArray(o)) return null
-    const deviceId = typeof o.deviceId === 'string' ? o.deviceId.trim().toUpperCase() : ''
+
+    const bodyId = typeof o.deviceId === 'string' ? o.deviceId.trim().toUpperCase() : ''
+    const keyId = typeof expectedDeviceId === 'string' ? expectedDeviceId.trim().toUpperCase() : ''
+    if (keyId && !DEVICE_RE.test(keyId)) return null
+    if (keyId && bodyId && bodyId !== keyId) return null
+    const deviceId = keyId || bodyId
     if (!DEVICE_RE.test(deviceId)) return null
-    // حقول نصية أساسية — نتسامح مع غيابها
+
+    const cleanedEmail = typeof o.email === 'string' ? cleanText(o.email, 254) : ''
     const rec: RegistrationRecord = {
       deviceId,
       shopName: typeof o.shopName === 'string' ? cleanText(o.shopName, 120) : '',
       ownerName: typeof o.ownerName === 'string' ? cleanText(o.ownerName, 120) : '',
       phone: typeof o.phone === 'string' ? cleanText(o.phone, 40) : '',
-      email: typeof o.email === 'string' && /^\S+@\S+\.\S+$/.test(cleanText(o.email, 254)) ? cleanText(o.email, 254) : '',
+      email: /^\S+@\S+\.\S+$/.test(cleanedEmail) ? cleanedEmail : '',
       city: typeof o.city === 'string' ? cleanText(o.city, 80) : '',
       street: typeof o.street === 'string' ? cleanText(o.street, 160) : '',
       activityNameAr: typeof o.activityNameAr === 'string' ? cleanText(o.activityNameAr, 60) : '',
-      registeredAt: typeof o.registeredAt === 'string' ? o.registeredAt : '',
-      firstSeenAt: typeof o.firstSeenAt === 'string' ? o.firstSeenAt : '',
-      lastSeenAt: typeof o.lastSeenAt === 'string' ? o.lastSeenAt : '',
-      reports: typeof o.reports === 'number' && Number.isFinite(o.reports) ? Math.floor(o.reports) : 1,
+      registeredAt: typeof o.registeredAt === 'string' ? cleanText(o.registeredAt, 40) : '',
+      firstSeenAt: typeof o.firstSeenAt === 'string' ? cleanText(o.firstSeenAt, 40) : '',
+      lastSeenAt: typeof o.lastSeenAt === 'string' ? cleanText(o.lastSeenAt, 40) : '',
+      reports: typeof o.reports === 'number' && Number.isFinite(o.reports) ? Math.max(1, Math.floor(o.reports)) : 1,
     }
-    // حقول اختيارية
     if (typeof o.activityId === 'string') rec.activityId = cleanText(o.activityId, 40) || undefined
     if (typeof o.plan === 'string') rec.plan = cleanText(o.plan, 12) || undefined
     if (typeof o.accountingMode === 'string') rec.accountingMode = cleanText(o.accountingMode, 10) || undefined
@@ -87,15 +106,20 @@ export function parseRegistrationRecord(raw: string | null): RegistrationRecord 
     if (o.pendingChanges && typeof o.pendingChanges === 'object' && !Array.isArray(o.pendingChanges)) {
       const pc: Record<string, string> = {}
       for (const [k, v] of Object.entries(o.pendingChanges as Record<string, unknown>)) {
-        if (typeof v === 'string' && v) pc[k] = cleanText(v, 120)
+        const safeKey = cleanText(k, 40)
+        if (!safeKey || UNSAFE_OBJ_KEYS.has(safeKey) || typeof v !== 'string') continue
+        const safeVal = cleanText(v, 120)
+        if (safeVal) pc[safeKey] = safeVal
       }
-      if (Object.keys(pc).length) rec.pendingChanges = pc
-      if (typeof o.pendingAt === 'string') rec.pendingAt = o.pendingAt
+      if (Object.keys(pc).length) {
+        rec.pendingChanges = pc
+        if (typeof o.pendingAt === 'string') rec.pendingAt = cleanText(o.pendingAt, 40) || undefined
+      }
     }
-    // تواريخ بلا قيمة — نملأها بوقت التحليل كاحتياط
-    if (!rec.registeredAt) rec.registeredAt = rec.firstSeenAt || rec.lastSeenAt || new Date().toISOString()
-    if (!rec.firstSeenAt) rec.firstSeenAt = rec.registeredAt
-    if (!rec.lastSeenAt) rec.lastSeenAt = rec.firstSeenAt
+    // توحيد التواريخ المتاحة فقط دون اختلاق تاريخ حالي للسجلات القديمة الفارغة
+    if (!rec.registeredAt) rec.registeredAt = rec.firstSeenAt || rec.lastSeenAt
+    if (!rec.firstSeenAt) rec.firstSeenAt = rec.registeredAt || rec.lastSeenAt
+    if (!rec.lastSeenAt) rec.lastSeenAt = rec.firstSeenAt || rec.registeredAt
     return rec
   } catch {
     return null
@@ -131,6 +155,11 @@ export const PENDING_LABELS: Record<string, string> = {
   doctorSpecialty: 'التخصص',
 }
 
+/** استرجاع التسمية العربية بأمان دون السقوط في خصائص Object.prototype (مثل toString) */
+export function pendingLabelAr(key: string): string {
+  return Object.hasOwn(PENDING_LABELS, key) ? PENDING_LABELS[key] : key
+}
+
 /** تنسيق عنوان كامل */
 export function fullAddress(r: Pick<RegistrationRecord, 'city' | 'street'>): string {
   return [r.city, r.street].filter(Boolean).join(' — ') || '—'
@@ -142,13 +171,13 @@ const DIAL_BY_COUNTRY: Record<string, string> = {
   TN: '216', DZ: '213', MA: '212', SD: '249',
 }
 
-/** رابط واتساب آمن (https://) متوافق مع سياسة أمان نوافذ Electron */
+/** رابط واتساب آمن (https://) متوافق مع سياسة أمان نوافذ Electron ويدعم الأرقام العربية */
 export function whatsappUrl(phone: string | undefined, countryCode?: string): string | null {
   if (!phone) return null
-  const trimmed = phone.trim()
-  let digits = trimmed.replace(/\D/g, '')
+  const normalized = normalizeDigits(phone).trim()
+  let digits = normalized.replace(/\D/g, '')
   if (!digits) return null
-  if (trimmed.startsWith('+')) {
+  if (normalized.startsWith('+')) {
     // دولي صريح مثل +201012345678
   } else if (digits.startsWith('00')) {
     digits = digits.slice(2)
@@ -166,16 +195,16 @@ export function sortRegistrationsByNewest(list: readonly RegistrationRecord[]): 
   return [...list].sort((a, b) => String(b.lastSeenAt ?? '').localeCompare(String(a.lastSeenAt ?? '')))
 }
 
-/** فلترة بالبحث: اسم المحل، المالك، الهاتف، البريد، الجهاز، النشاط */
+/** فلترة بالبحث: اسم المحل، المالك، الهاتف (عربي/إنجليزي)، البريد، الجهاز، النشاط */
 export function filterRegistrations(list: readonly RegistrationRecord[], query: string, onlyNew?: boolean, hasLicenseFn?: (id: string) => boolean): RegistrationRecord[] {
-  const q = query.trim().toLowerCase()
+  const q = normalizeDigits(query).trim().toLowerCase()
   return list.filter((r) => {
     if (onlyNew && hasLicenseFn?.(r.deviceId)) return false
     if (!q) return true
     return (
       r.shopName.toLowerCase().includes(q) ||
       r.ownerName.toLowerCase().includes(q) ||
-      r.phone.toLowerCase().includes(q) ||
+      normalizeDigits(r.phone).toLowerCase().includes(q) ||
       r.email.toLowerCase().includes(q) ||
       r.deviceId.toLowerCase().includes(q) ||
       r.activityNameAr.toLowerCase().includes(q) ||

@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import type { GlobalDefaults } from '../../src/core/issueForm.ts'
 import type { RegistrationRecord } from '../../src/core/registrations.ts'
 
@@ -10,10 +11,14 @@ const m = vi.hoisted(() => ({
   lookupDevice: vi.fn(),
   readGlobalDefaults: vi.fn(),
   sendKeyToCustomer: vi.fn(),
+  deactivateCustomer: vi.fn(),
+  readCloudFlags: vi.fn(),
+  setCloudFlag: vi.fn(),
 }))
 vi.mock('../../src/data/actions.ts', () => m)
 
 const { RegistrationsPage } = await import('../../src/ui/pages/RegistrationsPage.tsx')
+const { CustomersPage } = await import('../../src/ui/pages/CustomersPage.tsx')
 const { ToastProvider } = await import('../../src/ui/components/ui.tsx')
 const { useDataStore } = await import('../../src/stores/data.store.ts')
 
@@ -71,12 +76,20 @@ beforeEach(() => {
 })
 afterEach(() => cleanup())
 
+function mount(initialEntry = '/registrations') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <ToastProvider><RegistrationsPage /></ToastProvider>
+    </MemoryRouter>,
+  )
+}
+
 describe('RegistrationsPage — سير العمل الكامل', () => {
   it('يعرض المنصة بالعربية والحقول المعلّقة بالعربية ويفتح رابط واتساب آمن https://', async () => {
     const user = userEvent.setup()
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
     try {
-      render(<ToastProvider><RegistrationsPage /></ToastProvider>)
+      mount()
       // عند وجود lastSyncAt يستدعي الفحص الخفيف بدل refresh الشاملة
       expect(pollRegistrations).toHaveBeenCalledWith(30_000)
       expect(refresh).not.toHaveBeenCalled()
@@ -93,7 +106,7 @@ describe('RegistrationsPage — سير العمل الكامل', () => {
 
   it('إصدار المفتاح يُبقي النافذة مفتوحة لإرسال المفتاح للعميل، ولا يسرّب اسم النشاط العربي كمعرّف برمجي', async () => {
     const user = userEvent.setup()
-    render(<ToastProvider><RegistrationsPage /></ToastProvider>)
+    mount()
 
     await user.click(screen.getByRole('button', { name: /إصدار مفتاح/ }))
     const issueBtn = await screen.findByRole('button', { name: /تنشيط العميل|إصدار المفتاح/ })
@@ -116,5 +129,57 @@ describe('RegistrationsPage — سير العمل الكامل', () => {
     // الإغلاق يتم عند الضغط على «تم»
     await user.click(screen.getByRole('button', { name: 'تم' }))
     expect(screen.queryByText('SHOPSYS1.new.key')).toBeNull()
+  })
+
+  it('يفتح نافذة إصدار المفتاح تلقائياً عند القدوم من لوحة التحكم بالمعامل ?issue=<deviceId>', async () => {
+    mount('/registrations?issue=SHOP-1111-2222-3333')
+    expect(await screen.findByText(/إصدار مفتاح — صيدلية الأمل/)).toBeTruthy()
+  })
+
+  it('CustomersPage يعرض العميل المسجّل بلا رخصة (status=none) دون باقة وهمية «تجريبي» ولا يطلب readCloudFlags عبثاً', async () => {
+    const user = userEvent.setup()
+    m.readCloudFlags.mockReset().mockResolvedValue({ disabled: {}, reason: {} })
+    const reg = sampleReg()
+    useDataStore.setState({
+      customers: [{
+        deviceId: reg.deviceId,
+        customer: reg.shopName,
+        email: reg.email,
+        plan: '',
+        expiresAt: null,
+        activityId: null,
+        clientActivityId: 'pharmacy',
+        extraModules: [],
+        extraBranches: 0,
+        extraUsers: 0,
+        features: [],
+        fingerprint: '',
+        licenseKey: null,
+        lastSeenAt: reg.lastSeenAt,
+        lastActivityAt: null,
+        message: null,
+        unreadFromCustomer: 0,
+        totalMessages: 0,
+        status: 'none',
+        daysRemaining: null,
+      }],
+      registrations: [reg],
+      pendingRegistrations: [reg],
+      servicesAvailable: true,
+    })
+
+    render(
+      <MemoryRouter>
+        <ToastProvider><CustomersPage /></ToastProvider>
+      </MemoryRouter>,
+    )
+
+    // النقر على اسم العميل لفتح بطاقة التفاصيل
+    await user.click(screen.getByText('صيدلية الأمل'))
+    expect(await screen.findByText(/📞 الهاتف \(من التسجيل\)/)).toBeTruthy()
+    // لا يجوز أن يظهر «تجريبي» في بطاقة اشتراك عميل بلا باقة، ولا يُكرر البريد مرتين، ولا يُطلب readCloudFlags لميزات فارغة
+    expect(screen.queryByText('تجريبي')).toBeNull()
+    expect(screen.queryByText(/📧 البريد \(من التسجيل\)/)).toBeNull()
+    expect(m.readCloudFlags).not.toHaveBeenCalled()
   })
 })
